@@ -31,7 +31,7 @@ We demonstrate how to run the algorithms on the **German Credit** dataset, measu
 python DP/main.py AVG \
   data/german_credit/german_textual.csv good_loan present_employment_since_numeric \
   --output_folder data/german_credit/trend_results \
-  --mem_opt --agg_pack_opt
+  --mem_opt --agg_pack_opt --prune_aggpack_by_greedy 30
 ```
 
 ### Arguments:
@@ -40,7 +40,8 @@ python DP/main.py AVG \
 - `present_employment_since_numeric` — Group-by attribute(s)
 - `--mem_opt` — Enable memory optimization
 - `--agg_pack_opt` — Enable aggregation packing optimization (available for AVG, SUM, MEDIAN)
-
+- `--prune_aggpack_by_greedy <N>` given a result from the heuristic algorithm (see below), enable 
+  pruning the search to consider only solutions removing up to N tuples.
 ---
 
 ## Running the Heuristic Algorithm
