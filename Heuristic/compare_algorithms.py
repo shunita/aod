@@ -37,7 +37,9 @@ def run_algorithm(command, is_dp=False, timeout=600):
 
 
 # Helper function to process a single dataset
-def process_single_dataset(dataset_path, greedy_algo_path, dp_algo_path, agg_function, timeout, results_folder, group_column, agg_column, output_folder, dp_variations=True, aggpack_variations=False, deduce_setting_from_agg=False):
+def process_single_dataset(dataset_path, greedy_algo_path, dp_algo_path, agg_function, timeout, results_folder,
+                           group_column, agg_column, output_folder, dp_variations=False, aggpack_variations=True,
+                           deduce_setting_from_agg=False):
     print(f"Processing dataset: {dataset_path}")
     filename = os.path.basename(dataset_path)
 
@@ -147,8 +149,8 @@ def process_single_dataset(dataset_path, greedy_algo_path, dp_algo_path, agg_fun
     if aggpack_variations:
         # Agg pack prune by greedy
         dp4_results = {'time': 'NA', 'rows_removed': 'NA', 'mem_usage': 'NA'}
-        if num_rows >= skip_until:
-            dp4_results = run_algorithm(dp_command + ['--prune_aggpack_by_greedy', greedy_prune], is_dp=True, timeout=timeout)
+        #if num_rows >= skip_until:
+        dp4_results = run_algorithm(dp_command + ['--prune_aggpack_by_greedy', greedy_prune], is_dp=True, timeout=timeout)
         print(dp4_results)
         result_summary['dp_greedy_aggpack_prune_time'] = dp4_results['time']
         result_summary['dp_greedy_aggpack_prune_rows_removed'] = dp4_results['rows_removed']
@@ -158,7 +160,7 @@ def process_single_dataset(dataset_path, greedy_algo_path, dp_algo_path, agg_fun
         # already run for sum
         dp5_results = {'time': 'NA', 'rows_removed': 'NA', 'mem_usage': 'NA'}
         #if num_rows>skip_until:
-        #dp5_results = run_algorithm(dp_command + ['--agg_pack_opt'], is_dp=True, timeout=timeout)
+        dp5_results = run_algorithm(dp_command + ['--agg_pack_opt'], is_dp=True, timeout=timeout)
         print(dp5_results)
         result_summary['dp_aggpack_opt_time'] = dp5_results['time']
         result_summary['dp_aggpack_opt_rows_removed'] = dp5_results['rows_removed']
@@ -168,7 +170,7 @@ def process_single_dataset(dataset_path, greedy_algo_path, dp_algo_path, agg_fun
         # already run in DP_variations (naive)
         if agg_function.upper() in ('MEDIAN', 'AVG'):
             dp6_results = {'time': 'NA', 'rows_removed': 'NA', 'mem_usage': 'NA'}
-            #dp6_results = run_algorithm(dp_command + ['--agg_pack_opt', '--prune_aggpack_by_greedy', greedy_prune], is_dp=True, timeout=timeout)
+            dp6_results = run_algorithm(dp_command + ['--agg_pack_opt', '--prune_aggpack_by_greedy', greedy_prune], is_dp=True, timeout=timeout)
             print(dp6_results)
             result_summary['dp_aggpack_opt+greedy_aggpack_prune_time'] = dp6_results['time']
             result_summary['dp_aggpack_opt+greedy_aggpack_prune_rows_removed'] = dp6_results['rows_removed']
@@ -328,13 +330,13 @@ if __name__ == "__main__":
     os.makedirs(output_folder, exist_ok=True)
     
     if args.compare_aggregations:
-        compare_aggregations(dataset_folder, f"aggr-main.py", "Trendline-Outlier-Detection/main.py", timeout, results_folder=output_folder, grouping_column="A",                     aggregation_column="B", output_folder=output_folder)
+        compare_aggregations(dataset_folder, f"aggr-main.py", "../DP/main.py", timeout, results_folder=output_folder,
+                             grouping_column="A", aggregation_column="B", output_folder=output_folder)
     else:
-        results = process_datasets_serial(dataset_folder, f"aggr-main.py", "Trendline-Outlier-Detection/main.py",
+        results = process_datasets_serial(dataset_folder, f"aggr-main.py", "../DP/main.py",
                                             agg_function, timeout=timeout, results_folder=output_folder,
                                             grouping_column=grouping_column, aggregation_column=aggregation_column,
                                             output_folder=output_folder)
-        #results.to_csv(os.path.join(output_folder, "comparison_results.csv"), index=False)
     sys.exit()
 
 
