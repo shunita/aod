@@ -1,6 +1,6 @@
-# Measuring Deviations from Monotonic Trends through Database Repair
+# Analyzing Deviations from Monotonic Trends through Database Repair
 
-This repository contains code accompanying the paper **"Measuring Deviations from Monotonic Trends through Database Repair"**. It includes implementations of:
+This repository contains code accompanying the paper **"Analyzing Deviations from Monotonic Trends through Database Repair"**. It includes implementations of:
 
 - A **Dynamic Programming (DP)** algorithm for computing minimal repairs to enforce monotonicity.
 - A **Heuristic** algorithm offering a faster, approximate alternative.
