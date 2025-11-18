@@ -6,9 +6,34 @@ from typing import List, Union
 import pandas as pd
 from pandas.core.groupby import DataFrameGroupBy
 
+from aggregations import get_avg_subsets, get_count_subsets, get_count_distinct_subsets, get_max_subsets, \
+    get_min_subsets, get_sum_subsets, get_median_subsets, AggregationFunction
+from aggregations_pruning import get_sum_subsets_pruning, get_avg_subsets_pruning, get_median_subsets_pruning, AggregationPruningFunction
+
 from aggregations_mem import AggregationMem, SumAggregation, SumAggregationOpt, AvgAggregation, AvgAggregationPruning, \
     MedianAggregationOpt, MedianAggregation, MaxAggregation, AvgAggregationPruningHistogram, CountAggregation, CountDistinctAggregation
 
+AGGREGATIONS = {
+    'AVG': get_avg_subsets,
+    'COUNT': get_count_subsets,
+    'COUNT_DISTINCT': get_count_distinct_subsets,
+    'MAX': get_max_subsets,
+    'MIN': get_min_subsets,
+    'SUM': get_sum_subsets,
+    'MEDIAN': get_median_subsets,
+}
+PRUNING_AGGREGATIONS = {
+    'SUM': get_sum_subsets_pruning,
+    'AVG': get_avg_subsets_pruning,
+    'MEDIAN': get_median_subsets_pruning
+}
+
+MEM_AGGREGATIONS = {
+    #'SUM': SumAggregation,
+    'SUM': SumAggregationOpt,
+    'AVG': AvgAggregation,
+    'MEDIAN': MedianAggregationOpt,
+}
 
 MEM_AND_PRUNING_AGGREGATIONS = {
     'AVG': AvgAggregationPruning,
@@ -125,3 +150,24 @@ def get_aggregation_function(function_name: str, agg_pack_opt: bool) -> Aggregat
     return MEM_AND_PRUNING_AGGREGATIONS[function_name]
 
 
+# def get_aggregation_function(
+#         function_name: str, is_pruning: bool = False, is_mem_opt: bool = False
+# ) -> Union[AggregationFunction, AggregationPruningFunction]:
+#     if is_pruning and is_mem_opt:
+#         if function_name not in MEM_AND_PRUNING_AGGREGATIONS.keys():
+#             raise ValueError(f'Unrecognized aggregation function for pruning with mem opt: {function_name}')
+#         return MEM_AND_PRUNING_AGGREGATIONS[function_name]
+#
+#     if is_pruning:
+#         if function_name not in PRUNING_AGGREGATIONS.keys():
+#             raise ValueError(f'Unrecognized aggregation function for pruning: {function_name}')
+#         return PRUNING_AGGREGATIONS[function_name]
+#
+#     if is_mem_opt:
+#         if function_name not in MEM_AGGREGATIONS.keys():
+#             raise ValueError(f'Unrecognized aggregation function for mem optimization: {function_name}')
+#         return MEM_AGGREGATIONS[function_name]
+#
+#     if function_name not in AGGREGATIONS.keys():
+#         raise ValueError(f'Unrecognized aggregation function: {function_name}')
+#     return AGGREGATIONS[function_name]
