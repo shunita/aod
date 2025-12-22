@@ -10,7 +10,7 @@ DEBUG = False
 
 def run_greedy(dataset_path, agg_func, grouping_col, agg_col, output_folder):
     greedy_command = [
-        "python", "../aggr-main.py", dataset_path, agg_func,
+        "python", "../aggr_main.py", dataset_path, agg_func,
         "--grouping_column", grouping_col,
         "--aggregation_column", agg_col,
         "--output_folder", output_folder,

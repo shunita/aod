@@ -6,11 +6,11 @@ from typing import List, Union
 import pandas as pd
 from pandas.core.groupby import DataFrameGroupBy
 
-from aggregations import get_avg_subsets, get_count_subsets, get_count_distinct_subsets, get_max_subsets, \
+from DP.aggregations import get_avg_subsets, get_count_subsets, get_count_distinct_subsets, get_max_subsets, \
     get_min_subsets, get_sum_subsets, get_median_subsets, AggregationFunction
-from aggregations_pruning import get_sum_subsets_pruning, get_avg_subsets_pruning, get_median_subsets_pruning, AggregationPruningFunction
+from DP.aggregations_pruning import get_sum_subsets_pruning, get_avg_subsets_pruning, get_median_subsets_pruning, AggregationPruningFunction
 
-from aggregations_mem import AggregationMem, SumAggregation, SumAggregationOpt, AvgAggregation, AvgAggregationPruning, \
+from DP.aggregations_mem import AggregationMem, SumAggregation, SumAggregationOpt, AvgAggregation, AvgAggregationPruning, \
     MedianAggregationOpt, MedianAggregation, MaxAggregation, AvgAggregationPruningHistogram, CountAggregation, CountDistinctAggregation
 
 AGGREGATIONS = {

@@ -3,7 +3,7 @@ from typing import Dict, Protocol
 
 import pandas as pd
 
-from aggregations import get_index_set, _get_median_subset_even, _get_median_subset_odd
+from DP.aggregations import get_index_set, _get_median_subset_even, _get_median_subset_odd
 from tqdm import tqdm
 
 

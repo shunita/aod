@@ -47,7 +47,7 @@ python DP/main.py AVG \
 ## Running the Heuristic Algorithm
 
 ```bash
-python Heuristic/aggr-main.py \
+python Heuristic/aggr_main.py \
   --grouping_column present_employment_since_numeric \
   --aggregation_column good_loan \
   --output_folder data/german_credit/trend_results \

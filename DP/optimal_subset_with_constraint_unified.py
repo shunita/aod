@@ -2,7 +2,8 @@ from sortedcontainers import SortedDict
 import pandas as pd
 from typing import Dict, List, Union, Type
 
-from aggregations_mem import AggregationMem
+from DP.input_parser import get_aggregation_function
+from DP.aggregations_mem import AggregationMem
 
 
 def update_H_with_pruning(F, H, group_id):
@@ -198,3 +199,79 @@ def get_optimal_subset_F_first(
     # df2 = df.drop(indices_to_remove).reset_index(drop=True)
     # df2.to_csv('df2_output.csv', index=False)
     # print(H[H.keys()[-1]])
+
+class IncrementalDP(object):
+    def __init__(self, df: pd.DataFrame,
+                 # group_cols: Union[str, List[str]],
+                 group_col: str,
+                 agg_col: str,
+                 #Agg: Type[AggregationMem],
+                 agg_func_string: str,
+                 max_removed: int = None,
+                 time_cutoff_seconds: int = None,
+                 ):
+        self.df = df
+        self.group_col = group_col
+        self.agg_col = agg_col
+        self.Agg = get_aggregation_function(agg_func_string, agg_pack_opt=True)
+        # self.Agg = Agg
+        self.max_removed = max_removed
+        self.time_cutoff_seconds = time_cutoff_seconds
+        self.H = SortedDict()
+
+        self.H[0] = (0, [])  # first element is the amount of items, the second is the aggregation value in each key group
+        self.computed_group_keys = []
+        self.F_dict = {}
+        self.aggs = {}
+        self.group_sizes = {}
+        self.raw_group_keys = sorted(self.df[group_col].unique())
+        #self.group_keys_and_df = self.df.groupby(group_cols)  # groupby keys are sorted by default
+        self.sum_of_group_sizes = 0
+
+    def compute_up_to_i(self, i, agg_value_of_i_plus_1=None):
+        """
+        Args:
+            i: how many groups to compute the solution for.
+            agg_value_of_i_plus_1: aggregation value of group i+1
+        Returns:
+
+        """
+        # check how many Fs we already computed
+        already_computed = len(self.aggs)
+        # First compute F (realizable aggregations and max subset size) for each remaining group.
+        for group_key in self.raw_group_keys[already_computed:i+1]:
+            group_df = self.df[self.df[self.group_col] == group_key]
+            print(f"working on group: {group_key}")
+            agg = self.Agg()
+            self.F_dict[group_key] = agg.compute_max_subset_sizes(group_df, self.agg_col, self.max_removed, self.time_cutoff_seconds)
+            self.aggs[group_key] = agg
+            self.computed_group_keys.append(group_key)
+            self.group_sizes[group_key] = len(group_df)
+
+        for group_key in self.computed_group_keys[already_computed:]:
+            print(f"merging group: {group_key}")
+            self.sum_of_group_sizes += self.group_sizes[group_key]
+            self.H = update_H_no_pruning(self.F_dict[group_key], self.H, group_key)
+
+        # No pruning - search for the best solution in H
+        best_repair_size = 0
+        agg_values_and_group_keys = None
+        for x in self.H:
+            if agg_value_of_i_plus_1 is not None and x > agg_value_of_i_plus_1:
+                continue
+            repair_size, group_values = self.H[x]
+            if repair_size > best_repair_size:
+                best_repair_size = repair_size
+                agg_values_and_group_keys = group_values
+
+        ids_to_keep = []
+        for agg_value, group_key in agg_values_and_group_keys:
+            print(f"find subset for group {group_key} with agg value {agg_value}")
+            ids_to_keep.extend(self.aggs[group_key].get_subset_for_value(agg_value))
+
+        subset_df = self.df.iloc[ids_to_keep]
+        removed_so_far_df = self.df.loc[self.df[self.group_col].isin([self.raw_group_keys[:i+1]]) & ~self.df.index.isin(ids_to_keep)]
+        #print("agg result after repair:")
+        #print(subset_df.groupby(self.group_cols)[self.agg_col].agg(['sum', 'count', 'mean', 'median', 'max']))
+        # print(f"num_removed: {len(removed_df)}")
+        return subset_df, removed_so_far_df
