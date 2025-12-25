@@ -67,3 +67,12 @@ python Heuristic/compare_algorithms.py \
   --grouping_column present_employment_since_numeric \
   --aggregation_column good_loan
 ```
+
+## Running the demo
+Create a conda environment with the required packages according to the environment file:
+```conda env create -f environment.yml```
+or using pip according to the requirements file (make sure to use python 3.10):
+```pip install -r requirements.txt```
+
+Run the demo:
+```python -m streamlit run demo.py```

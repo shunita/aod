@@ -57,6 +57,7 @@ class TrendRepair(object):
         if self.computed_dp_so_far + 1 < len(self.group_keys):
             next_group_key = self.group_keys[self.computed_dp_so_far+1]
             heur_agg_value_of_next_group = heur_trend_result[next_group_key]
+        # TODO: bug somewhere here in the combination of the two solutions! The result is not a repair.
         print(f"groups computed so far: {self.computed_dp_so_far}\n next group: {next_group_key}\n next heur agg value: {heur_agg_value_of_next_group}")
         removed_tuples_up_to_i = self.inc_dp.compute_up_to_i(self.computed_dp_so_far, heur_agg_value_of_next_group)
 

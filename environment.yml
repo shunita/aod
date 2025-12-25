@@ -1,0 +1,7 @@
+name: trend-demo
+dependencies:
+  - python=3.10
+  - pandas
+  - streamlit
+  - sortedcontainers
+  - tqdm
