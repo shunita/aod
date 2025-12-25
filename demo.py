@@ -19,6 +19,7 @@ if uploaded_file is not None:
 
     tr = TrendRepair(df, agg_func, group_attr, agg_attr)
 
+    # TODO add the data labels to the bar charts
     if st.button("Run original query"):
         original = tr.run_query()
         st.bar_chart(
@@ -26,7 +27,7 @@ if uploaded_file is not None:
             x=group_attr,
             y=agg_attr
         )
-    # TODO: make the bar chart stay! even when clicking on the other "FInd Repair" button
+    # TODO: make the bar chart stay! even when clicking on the other "Find Repair" button
 
     if st.button("Find heuristic repair"):
         heur_trend_result, heur_removed_per_group, heur_total_removed = tr.run_heuristic()
@@ -37,6 +38,14 @@ if uploaded_file is not None:
             y=agg_attr
         )
     # TODO: make the bar chart stay, and make it another color, and make the bars more narrow
-    # TODO: Also, can we show them on the same graph?
+    # TODO: show them on the same graph as different series
 
     # TODO: also compute the optimal solution and show it on the same graph.
+
+    if st.button("Find better repairs:"):
+        intermediate_result = tr.compute_next_partial_solution()
+        st.bar_chart(
+            intermediate_result,
+            x=group_attr,
+            y=agg_attr
+        )

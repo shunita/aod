@@ -269,9 +269,11 @@ class IncrementalDP(object):
             print(f"find subset for group {group_key} with agg value {agg_value}")
             ids_to_keep.extend(self.aggs[group_key].get_subset_for_value(agg_value))
 
-        subset_df = self.df.iloc[ids_to_keep]
-        removed_so_far_df = self.df.loc[self.df[self.group_col].isin([self.raw_group_keys[:i+1]]) & ~self.df.index.isin(ids_to_keep)]
+        # subset_df = self.df.iloc[ids_to_keep]
+        removed_so_far_df = self.df.loc[(self.df[self.group_col].isin([self.raw_group_keys[:i+1]]))
+                                        & (~self.df.index.isin(ids_to_keep))]
         #print("agg result after repair:")
         #print(subset_df.groupby(self.group_cols)[self.agg_col].agg(['sum', 'count', 'mean', 'median', 'max']))
         # print(f"num_removed: {len(removed_df)}")
-        return subset_df, removed_so_far_df
+        # return subset_df, removed_so_far_df
+        return removed_so_far_df

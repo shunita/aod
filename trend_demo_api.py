@@ -17,8 +17,12 @@ class TrendRepair(object):
         self.agg_func = agg_func
         self.grouping_col = grouping_col
         self.aggregation_col = aggregation_col
+        self.group_keys = sorted(self.df[self.grouping_col].unique())
+
         self.computed_dp_so_far = 0
-        # self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed = self.run_heuristic()
+        self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed, self.removed_by_heur = None, None, None, None
+        self.inc_dp = None
+
 
     def run_query(self):
         trend_result = self.df.groupby(self.grouping_col)[self.aggregation_col].agg(
@@ -31,27 +35,43 @@ class TrendRepair(object):
                                                  aggregation_column=self.aggregation_col, output_csv=output_csv)
         trend_result = result_df.groupby(self.grouping_col)[self.aggregation_col].agg(pandas_function_map[self.agg_func]).reset_index() #.to_dict()
         removed_per_group = removed_df.groupby(self.grouping_col)[self.aggregation_col].agg("count")
+        self.removed_by_heur = removed_df
         self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed = trend_result, removed_per_group, len(removed_df)
         return trend_result, removed_per_group, len(removed_df)
 
 
     def compute_next_partial_solution(self):
-        heur_trend_result, heur_removed_per_group, heur_total_removed = self.run_heuristic()
+        if self.removed_by_heur is None:
+            print("running heuristic")
+            self.run_heuristic()
+        heur_trend_result = self.heur_trend_result.set_index(self.grouping_col).to_dict()[self.aggregation_col]
 
-        # output these somehow
         dp_function_map = {"sum": "SUM", "max": "MAX", "avg": "AVG", "median": "MEDIAN"}
-        inc_dp = IncrementalDP(df, grouping_col, aggregation_col, dp_function_map[agg_func],
-                     max_removed=heur_total_removed, time_cutoff_seconds=None)
+        if self.inc_dp is None:
+            print("initializing incremental DP")
+            self.inc_dp = IncrementalDP(self.df, self.grouping_col, self.aggregation_col, dp_function_map[self.agg_func],
+                                        max_removed=len(self.removed_by_heur), time_cutoff_seconds=None)
 
-        group_keys = sorted(df[grouping_col].unique())
-        for i in range(len(group_keys)):
-            # if only the last group remains, just compute the full solution.
-            heur_agg_value_of_next_group = None
-            if i+1 < len(group_keys):
-                group_key_i_plus_1 = group_keys[i+1]
-                heur_agg_value_of_next_group = heur_trend_result[group_key_i_plus_1]
-            subset_df, removed_df = inc_dp.compute_up_to_i(i, heur_agg_value_of_next_group)
-            # output this somehow as soon as it's ready
-            intermediate_result = subset_df.groupby(grouping_col)[aggregation_col].agg(pandas_function_map[agg_func]).to_dict()
+        # if only the last group remains, just compute the full solution.
+        heur_agg_value_of_next_group = None
+        if self.computed_dp_so_far + 1 < len(self.group_keys):
+            next_group_key = self.group_keys[self.computed_dp_so_far+1]
+            heur_agg_value_of_next_group = heur_trend_result[next_group_key]
+        print(f"groups computed so far: {self.computed_dp_so_far}\n next group: {next_group_key}\n next heur agg value: {heur_agg_value_of_next_group}")
+        removed_tuples_up_to_i = self.inc_dp.compute_up_to_i(self.computed_dp_so_far, heur_agg_value_of_next_group)
 
-        return intermediate_result, heur_trend_result,
+        # compute how many removed by heuristic from i+1 to the end
+        remaining_group_keys = self.group_keys[self.computed_dp_so_far+1:]
+        removed_tuples_from_i_plus_1 = self.removed_by_heur[self.removed_by_heur[self.grouping_col].isin(remaining_group_keys)]
+        print("remaining group_keys: ", remaining_group_keys, "tuples removed by heur from groups i+1 to n: ", removed_tuples_from_i_plus_1)
+        # combine the solutions
+        all_removed_index = removed_tuples_up_to_i.index.append(removed_tuples_from_i_plus_1.index)
+        subset_df = self.df[~self.df.index.isin(all_removed_index)]
+        print("initial df size: ", len(self.df),
+              "\ntotal removed index: ", len(all_removed_index),
+              "\nremaining in df: ", len(subset_df))
+        intermediate_result = subset_df.groupby(self.grouping_col)[self.aggregation_col].agg(
+            pandas_function_map[self.agg_func]).reset_index()
+
+        self.computed_dp_so_far += 1
+        return intermediate_result
