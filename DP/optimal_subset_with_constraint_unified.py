@@ -270,7 +270,7 @@ class IncrementalDP(object):
             ids_to_keep.extend(self.aggs[group_key].get_subset_for_value(agg_value))
 
         # subset_df = self.df.iloc[ids_to_keep]
-        removed_so_far_df = self.df.loc[(self.df[self.group_col].isin([self.raw_group_keys[:i+1]]))
+        removed_so_far_df = self.df.loc[(self.df[self.group_col].isin(self.raw_group_keys[:i+1]))
                                         & (~self.df.index.isin(ids_to_keep))]
         #print("agg result after repair:")
         #print(subset_df.groupby(self.group_cols)[self.agg_col].agg(['sum', 'count', 'mean', 'median', 'max']))

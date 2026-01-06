@@ -54,6 +54,7 @@ class TrendRepair(object):
 
         # if only the last group remains, just compute the full solution.
         heur_agg_value_of_next_group = None
+        next_group_key = None
         if self.computed_dp_so_far + 1 < len(self.group_keys):
             next_group_key = self.group_keys[self.computed_dp_so_far+1]
             heur_agg_value_of_next_group = heur_trend_result[next_group_key]

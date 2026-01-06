@@ -21,18 +21,39 @@ def preprocess_group_values_with_indices(df, grouping_column, aggregation_column
 
 
 def calculate_groups_stats(df, agg_func, grouping_column, aggregation_column):
-    """Calculate Alpha(A_i) and MVI ( Measure of Violations Index) for adjacent groups."""
-    group_agg = df.groupby(grouping_column)[aggregation_column].apply(agg_func).reset_index()
-    alphas = group_agg[aggregation_column].values
-    mvis = np.append(alphas[:-1] - alphas[1:], 0)
-    mvis = np.maximum(0, mvis)  # Replace negative values with 0
+    """Calculate Alpha(A_i) and MVI (Measure of Violations Index) for adjacent groups.
 
-    groups_stats = {
-        group: {"Alpha(A_i)": alpha, "MVI": mvi, "prev": group - 1, "next": group + 1}
-        for group, alpha, mvi in zip(group_agg[grouping_column], alphas, mvis)
-    }
+    Adjacency is defined by:
+    - ordered categorical order if grouping_column is an ordered Categorical
+    - otherwise sorted unique group keys
+
+    We do NOT assume group IDs are consecutive integers.
+    """
+    s = df[grouping_column]
+
+    if pd.api.types.is_categorical_dtype(s) and getattr(s.dtype, "ordered", False):
+        group_keys = list(s.cat.categories)
+    else:
+        group_keys = sorted(s.dropna().unique().tolist())
+
+    if not group_keys:
+        return {}
+
+    agg_series = df.groupby(grouping_column)[aggregation_column].apply(agg_func)
+    agg_series = agg_series.reindex(group_keys, fill_value=0)
+
+    alphas = agg_series.values
+    mvis = np.append(alphas[:-1] - alphas[1:], 0)
+    mvis = np.maximum(0, mvis)
+
+    groups_stats = {}
+    for idx, (group, alpha, mvi) in enumerate(zip(group_keys, alphas, mvis)):
+        prev_g = group_keys[idx - 1] if idx > 0 else None
+        next_g = group_keys[idx + 1] if (idx + 1) < len(group_keys) else None
+        groups_stats[group] = {"Alpha(A_i)": alpha, "MVI": mvi, "prev": prev_g, "next": next_g}
 
     return groups_stats
+
 
 
 # --- Group Updates ---
@@ -217,6 +238,10 @@ def calculate_groups_impacts(group, groups_data, groups_stats, agg_func, groups_
 def initialize_group_data_and_stats(df, grouping_column, aggregation_column, agg_func):
     groups_data = preprocess_group_values_with_indices(df, grouping_column, aggregation_column)
     groups_stats = calculate_groups_stats(df, agg_func, grouping_column, aggregation_column)
+    groups_stats = calculate_groups_stats(df, agg_func, grouping_column, aggregation_column)
+    if groups_stats is None:
+        # Defensive: should never happen, but prevents cryptic AttributeError
+        groups_stats = {}
     Smvi = sum(stats["MVI"] for stats in groups_stats.values())
 
     # Precompute initial sums and counts for each group (for avg aggregation)
@@ -306,10 +331,12 @@ def handle_removal_and_update(groups_data, groups_stats, max_impact_data, agg_fu
             del groups_sorted_values[max_impact_group]
 
     group_impact_calculated[max_impact_group] = False
-    if max_impact_group - 1 in groups_stats:
-        group_impact_calculated[max_impact_group - 1] = False
-    if max_impact_group + 1 in groups_stats:
-        group_impact_calculated[max_impact_group + 1] = False
+    prev_group = groups_stats[max_impact_group]["prev"]
+    next_group = groups_stats[max_impact_group]["next"]
+    if prev_group in groups_stats:
+        group_impact_calculated[prev_group] = False
+    if next_group in groups_stats:
+        group_impact_calculated[next_group] = False
 
     return num_tuples_to_remove, max_impact_group, max_impact_value
 
@@ -344,8 +371,10 @@ def greedy_algorithm(df, agg_func, grouping_column, aggregation_column, output_c
         violating_groups = [group_id for group_id, stats in groups_stats.items() if stats["MVI"] > 0]
         additional_groups = None
 
-        if agg_func in {"avg", "mean", "median"}: # In the case of these aggregation functions, we can also try to inc the alpha val of group+1
-            additional_groups = [group_id + 1 for group_id in violating_groups if (group_id + 1) in groups_stats]
+        if agg_func in {"avg", "mean", "median"}: # In the case of these aggregation functions, we can also try to inc the alpha val of the next group
+            additional_groups = [groups_stats[group_id]["next"]
+                                 for group_id in violating_groups
+                                 if groups_stats[group_id]["next"] in groups_stats]
             violating_groups.extend(additional_groups)
             violating_groups = list(set(violating_groups))
 
