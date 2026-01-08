@@ -65,13 +65,8 @@ class TrendRepair(object):
                                         max_removed=len(self.removed_by_heur), time_cutoff_seconds=None)
 
         # if only the last group remains, just compute the full solution.
-        # heur_agg_value_of_next_group = None
         next_group_key = None
         heur_agg_value_of_next_group = self.__get_next_constraint(heur_trend_result)
-        # if self.computed_dp_so_far + 1 < len(self.group_keys):
-        #     next_group_key = self.group_keys[self.computed_dp_so_far+1]
-        #     heur_agg_value_of_next_group = heur_trend_result[next_group_key]
-        # TODO: bug somewhere here in the combination of the two solutions! The result is not a repair.
         print(f"groups computed so far: {self.computed_dp_so_far}\n next group: {next_group_key}\n next heur agg value: {heur_agg_value_of_next_group}")
         removed_tuples_up_to_i = self.inc_dp.compute_up_to_i(self.computed_dp_so_far, heur_agg_value_of_next_group)
 
