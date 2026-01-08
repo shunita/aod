@@ -7,8 +7,8 @@ from trend_demo_api import TrendRepair
 
 IS_SLEEP = False
 
-st.set_page_config(page_title="Trend Deviation Repair Demo", layout="wide")
-st.title("Trend Deviation Repair Demo")
+st.set_page_config(page_title="MonoTune: Analyze Trend Deviations", layout="wide")
+st.title("MonoTune: Analyze Trend Deviations")
 
 # Subtle styling for the explanation modal (slightly transparent + blur)
 st.markdown(
@@ -297,8 +297,11 @@ def _render_row(label: str, key: str, runtime_s, deleted_n):
                 params_key = st.session_state.get("params_key")
                 if isinstance(params_key, tuple) and len(params_key) == 4:
                     _, group_attr, agg_attr, agg_func = params_key
+                    # st.markdown(
+                    #     f"**Query:** `SELECT {str(agg_func).upper()}({agg_attr}) GROUP BY {group_attr}`"
+                    # )
                     st.markdown(
-                        f"**Query:** `SELECT {str(agg_func).upper()}({agg_attr}) GROUP BY {group_attr}`"
+                        f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}"
                     )
         else:
             # fallback if popover not available in this Streamlit version
@@ -329,8 +332,9 @@ def _build_explanation_md(payload: dict) -> str:
 
     if group_attr and agg_attr and agg_func:
         lines.append("")
-        lines.append("**Query:**")
-        lines.append(f"`SELECT {str(agg_func).upper()}({agg_attr}) GROUP BY {group_attr}`")
+        # lines.append("**Query:**")
+        lines.append(f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}")
+        # lines.append(f"`SELECT {str(agg_func).upper()}({agg_attr}) GROUP BY {group_attr}`")
 
     lines.append("")
 
@@ -526,7 +530,9 @@ with controls_col:
 
 with output_col:
     # Centered query (bigger, pops, white)
-    query_sql = f"SELECT {agg_func.upper()}({agg_attr}) AS value GROUP BY {group_attr}"
+    # query_sql = f"SELECT {agg_func.upper()}({agg_attr}) AS value GROUP BY {group_attr}"
+    query_sql = f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}"
+
     st.markdown(
         f"""
         <div style="

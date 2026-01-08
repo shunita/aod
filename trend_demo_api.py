@@ -39,6 +39,18 @@ class TrendRepair(object):
         self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed = trend_result, removed_per_group, len(removed_df)
         return trend_result, removed_per_group, len(removed_df)
 
+    def __get_next_constraint(self, heur_trend_result):
+        index_of_next_agg_value = self.computed_dp_so_far + 1
+        heur_agg_value_of_next_group = None
+        if index_of_next_agg_value < len(self.group_keys):
+            next_group_key = self.group_keys[index_of_next_agg_value]
+            # next group is not included in the heuristic solution - take the following aggregate value from the heuristic
+            while next_group_key not in heur_trend_result and index_of_next_agg_value < len(self.group_keys):
+                index_of_next_agg_value += 1
+                next_group_key = self.group_keys[index_of_next_agg_value]
+            if index_of_next_agg_value < len(self.group_keys):
+                heur_agg_value_of_next_group = heur_trend_result[next_group_key]
+        return heur_agg_value_of_next_group
 
     def compute_next_partial_solution(self):
         if self.removed_by_heur is None:
@@ -53,11 +65,12 @@ class TrendRepair(object):
                                         max_removed=len(self.removed_by_heur), time_cutoff_seconds=None)
 
         # if only the last group remains, just compute the full solution.
-        heur_agg_value_of_next_group = None
+        # heur_agg_value_of_next_group = None
         next_group_key = None
-        if self.computed_dp_so_far + 1 < len(self.group_keys):
-            next_group_key = self.group_keys[self.computed_dp_so_far+1]
-            heur_agg_value_of_next_group = heur_trend_result[next_group_key]
+        heur_agg_value_of_next_group = self.__get_next_constraint(heur_trend_result)
+        # if self.computed_dp_so_far + 1 < len(self.group_keys):
+        #     next_group_key = self.group_keys[self.computed_dp_so_far+1]
+        #     heur_agg_value_of_next_group = heur_trend_result[next_group_key]
         # TODO: bug somewhere here in the combination of the two solutions! The result is not a repair.
         print(f"groups computed so far: {self.computed_dp_so_far}\n next group: {next_group_key}\n next heur agg value: {heur_agg_value_of_next_group}")
         removed_tuples_up_to_i = self.inc_dp.compute_up_to_i(self.computed_dp_so_far, heur_agg_value_of_next_group)
