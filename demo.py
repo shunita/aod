@@ -5,18 +5,41 @@ import altair as alt
 import json
 import re
 
-
 from trend_demo_api import TrendRepair
+try:
+    from llm_explainer_old import explain_step, explain_steps_batch
+except Exception:
+    explain_step = None
+    explain_steps_batch = None
 
-IS_SLEEP = False
+try:
+    import hardcoded_explanations
+except Exception:
+    hardcoded_explanations = None
+
+IS_SLEEP = True
 USE_LIGHT_BG = False
 HEURISTIC_COLOR = "#fca5a5"
 FIRST_STEP_COLOR = (252, 165, 165)  # light red
 OPTIMAL_COLOR = (134, 239, 172)  # light green
 NARROW_BARS = False
 
+
+# Explanation modes:
+# 0 = LLM  
+# 1 = Stats-only 
+# 2 = Hard-coded
+EXPLANATION_TYPE = 0
+
 st.set_page_config(page_title="MonoTune: Analyze Trend Deviations", layout="wide")
 st.title("MonoTune: Analyze Trend Deviations")
+
+
+# If you change EXPLANATION_TYPE in the code, reset cached explanations automatically.
+if st.session_state.get("_explanation_type") != EXPLANATION_TYPE:
+    st.session_state["_explanation_type"] = EXPLANATION_TYPE
+    st.session_state["llm_explanations"] = {}
+    st.session_state["pending_optimal_llm_batch"] = False
 
 # global styling
 # styling for light background
@@ -648,6 +671,10 @@ def _render_row(label: str, key: str, runtime_s, deleted_n, runtime_total_s=None
             with st.popover("Explain", type="secondary", width="stretch"):
                 # markdown-only (no widgets) so there is no rerun
                 st.markdown(f"### {label}")
+                llm_txt = (st.session_state.get("llm_explanations") or {}).get(label)
+                if llm_txt:
+                    st.markdown(llm_txt)
+                    st.markdown("")
                 st.markdown(f"**Runtime:** {rt_disp}")
                 st.markdown(f"**Tuples deleted:** {_fmt_int(deleted_n)}")
 
@@ -683,6 +710,10 @@ def _build_explanation_md(payload: dict) -> str:
 
     lines = []
     lines.append(f"### {label}")
+    llm_txt = (st.session_state.get("llm_explanations") or {}).get(label)
+    if llm_txt:
+        lines.append(llm_txt)
+        lines.append("")
     if runtime_s is not None:
         lines.append(f"**Runtime:** {_fmt_sec(runtime_s)}")
     if deleted_n is not None:
@@ -753,6 +784,328 @@ def _build_explanation_md(payload: dict) -> str:
     return "\n".join(lines)
 
 
+# -----------------------------
+# LLM explanations (auto mode)
+# -----------------------------
+
+def _parse_step_num_from_label(label: str):
+    if label == "Optimal":
+        return int(st.session_state.get("max_steps", 0)) or None
+    m = re.match(r"Intermediate repair \(step (\d+)\)", str(label))
+    if m:
+        try:
+            return int(m.group(1))
+        except Exception:
+            return None
+    return None
+
+
+def _build_llm_payload(label: str, runtime_s=None):
+    """
+    Build a compact payload for the LLM based on per-group tuple deletion/remaining stats.
+    Keeps input small for speed: includes totals + top groups by deletions.
+    """
+    params_key = st.session_state.get("params_key")
+    group_attr = agg_attr = agg_func = None
+    if isinstance(params_key, tuple) and len(params_key) == 4:
+        _, group_attr, agg_attr, agg_func = params_key
+
+    tr = st.session_state.get("tr_obj")
+    group_order = []
+    try:
+        if tr is not None and getattr(tr, "group_keys", None) is not None:
+            group_order = [str(x) for x in tr.group_keys]
+    except Exception:
+        group_order = []
+
+    original_counts = st.session_state.get("tuple_counts_per_group") or {}
+    original_total = int(sum(original_counts.values())) if isinstance(original_counts, dict) else None
+
+    deleted_map = {}
+    left_map = {}
+
+    if label == "Original":
+        deleted_map = {str(k): 0 for k in original_counts.keys()}
+        left_map = {str(k): int(v) for k, v in original_counts.items()}
+    elif label == "Heuristic":
+        deleted_map = st.session_state.get("heur_deleted_per_group") or {}
+        left_map = st.session_state.get("heur_left_per_group") or {}
+    else:
+        step_num = _parse_step_num_from_label(label)
+        if step_num is not None:
+            deleted_steps = st.session_state.get("step_deleted_per_group") or []
+            left_steps = st.session_state.get("step_left_per_group") or []
+            if 1 <= step_num <= len(deleted_steps):
+                deleted_map = deleted_steps[step_num - 1] or {}
+            if 1 <= step_num <= len(left_steps):
+                left_map = left_steps[step_num - 1] or {}
+
+    # normalize keys to str/int
+    def _get_int(m, k, default=0):
+        try:
+            return int(m.get(k, default))
+        except Exception:
+            return int(default)
+
+    # If no group order, fall back to keys from original counts
+    if not group_order:
+        group_order = [str(k) for k in original_counts.keys()]
+
+    per_group = []
+    for g in group_order:
+        per_group.append({
+            "group": g,
+            "deleted_total": _get_int(deleted_map, g, 0),
+            "remaining": _get_int(left_map, g, _get_int(original_counts, g, 0)),
+        })
+
+    tuples_remaining = int(sum([x["remaining"] for x in per_group])) if per_group else None
+    tuples_deleted_total = None
+    if original_total is not None and tuples_remaining is not None:
+        tuples_deleted_total = int(original_total) - int(tuples_remaining)
+
+    # Top groups by deletions (compact)
+    top_groups = sorted(per_group, key=lambda r: r.get("deleted_total", 0), reverse=True)
+    top_groups = top_groups[: min(8, len(top_groups))]
+
+    payload = {
+        "series_label": label,
+        "step_num": _parse_step_num_from_label(label),
+        "query": {
+            "group_attr": group_attr,
+            "agg_attr": agg_attr,
+            "agg_func": agg_func,
+            "trend_direction": st.session_state.get("trend_direction", "non-decreasing"),
+        },
+        "totals": {
+            "tuples_original": original_total,
+            "tuples_remaining": tuples_remaining,
+            "tuples_deleted_total": tuples_deleted_total,
+        },
+        "top_groups_by_deleted": [
+            {"group": r["group"], "deleted_total": r["deleted_total"], "remaining": r["remaining"]}
+            for r in top_groups
+        ],
+        "runtime_s": runtime_s,
+    }
+    return payload
+
+
+
+def _baseline_explanation_from_payload(payload: dict) -> str:
+    """Fast, deterministic fallback explanation (also used for EXPLANATION_TYPE=1)."""
+    if not isinstance(payload, dict):
+        return ""
+    label = payload.get("series_label") or payload.get("label") or ""
+    q = payload.get("query") or {}
+    totals = payload.get("totals") or {}
+    top = payload.get("top_groups_by_deleted") or []
+
+    group_attr = q.get("group_attr")
+    agg_attr = q.get("agg_attr")
+    agg_func = q.get("agg_func")
+    trend_dir = q.get("trend_direction")
+
+    tuples_original = totals.get("tuples_original")
+    tuples_remaining = totals.get("tuples_remaining")
+    tuples_deleted_total = totals.get("tuples_deleted_total")
+
+    lines = []
+    if group_attr and agg_attr and agg_func:
+        exp = "increase with" if trend_dir != "non-increasing" else "decrease with"
+        lines.append(f"Trend: expect {str(agg_func).upper()}({agg_attr}) to {exp} {group_attr}.")
+        lines.append("")
+
+    if tuples_original is not None and tuples_remaining is not None:
+        if tuples_deleted_total is None:
+            try:
+                tuples_deleted_total = int(tuples_original) - int(tuples_remaining)
+            except Exception:
+                tuples_deleted_total = None
+    if tuples_deleted_total is not None and tuples_remaining is not None:
+        lines.append(f"**Totals:** deleted **{_fmt_int(tuples_deleted_total)}** tuples; remaining **{_fmt_int(tuples_remaining)}**.")
+    elif tuples_deleted_total is not None:
+        lines.append(f"**Totals:** deleted **{_fmt_int(tuples_deleted_total)}** tuples.")
+    lines.append("")
+
+    # Top groups table (compact)
+    if top:
+        if group_attr:
+            lines.append(f"**Most impacted {group_attr} groups:**")
+        else:
+            lines.append("**Most impacted groups:**")
+        lines.append("")
+        lines.append("| Group | Deleted | Remaining |")
+        lines.append("|---|---:|---:|")
+        for r in top:
+            g = r.get("group", "—")
+            d = r.get("deleted_total", 0)
+            rem = r.get("remaining", 0)
+            lines.append(f"| {g} | {int(d) if d is not None else 0} | {int(rem) if rem is not None else 0} |")
+        lines.append("")
+
+    # Series-specific note
+    if label == "Original":
+        lines.append("Baseline aggregate from the uploaded data (no deletions).")
+    elif label == "Heuristic":
+        lines.append("Greedy heuristic repair: deletes tuples to reduce/eliminate trend violations (not globally optimal).")
+    elif isinstance(label, str) and (label == "Optimal" or label.startswith("Intermediate repair (step ")):
+        lines.append("Optimal (DP) repair shown step-by-step (intermediate steps may combine DP prefix + heuristic suffix).")
+
+    return "\n".join([ln for ln in lines if ln is not None])
+
+
+def _format_stats_explanation(payload: dict) -> str:
+    """EXPLANATION_TYPE=1: show the exact statistics we would send to the LLM."""
+    # For now, reuse the deterministic baseline, but also include the raw payload as JSON (compact).
+    base = _baseline_explanation_from_payload(payload)
+    try:
+        payload_json = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        payload_json = None
+
+    if payload_json:
+        return base + "\n\n---\n\n**Stats payload (sent to the LLM in mode 0):**\n```json\n" + payload_json + "\n```\n"
+    return base
+
+
+def _hardcoded_explanation_for_label(label: str) -> str | None:
+    """EXPLANATION_TYPE=2: pull explanations from hardcoded_explanations.py."""
+    try:
+        hc = hardcoded_explanations
+        if hc is None:
+            return None
+        step_num = _parse_step_num_from_label(label)
+        max_steps = int(st.session_state.get("max_steps", 0) or 0) or None
+        if hasattr(hc, "get_explanation"):
+            return hc.get_explanation(label=label, step_num=step_num, max_steps=max_steps)
+        # Fallback if user only defines constants
+        if label == "Original" and hasattr(hc, "ORIGINAL"):
+            return getattr(hc, "ORIGINAL")
+        if label == "Heuristic" and hasattr(hc, "HEURISTIC"):
+            return getattr(hc, "HEURISTIC")
+        if label == "Optimal" and hasattr(hc, "OPTIMAL"):
+            return getattr(hc, "OPTIMAL")
+        if step_num is not None and hasattr(hc, "STEP_EXPLANATIONS"):
+            steps = getattr(hc, "STEP_EXPLANATIONS") or []
+            if 1 <= step_num <= len(steps):
+                return steps[step_num - 1]
+        return None
+    except Exception:
+        return None
+
+
+
+def _auto_generate_single_explanation(label: str):
+    """Generate and store explanation for a single label (Original/Heuristic) once."""
+    if st.session_state.get("llm_explanations") is None:
+        st.session_state["llm_explanations"] = {}
+
+    if st.session_state["llm_explanations"].get(label):
+        return
+
+    runtime_key = {
+        "Original": "runtime_original",
+        "Heuristic": "runtime_heuristic",
+    }.get(label)
+
+    runtime_s = st.session_state.get(runtime_key) if runtime_key else None
+    payload = _build_llm_payload(label, runtime_s=runtime_s)
+
+    text = None
+    if EXPLANATION_TYPE == 2:
+        text = _hardcoded_explanation_for_label(label)
+    elif EXPLANATION_TYPE == 1:
+        text = _format_stats_explanation(payload)
+    else:
+        # EXPLANATION_TYPE == 0 (LLM)
+        if explain_step is None:
+            text = _baseline_explanation_from_payload(payload)
+        else:
+            try:
+                text = explain_step(payload, model=st.session_state.get("llm_model", "gpt-5-mini"))
+            except Exception:
+                text = _baseline_explanation_from_payload(payload)
+
+    if text:
+        st.session_state["llm_explanations"][label] = text
+
+
+
+def _auto_generate_optimal_batch_explanations():
+    """After ALL steps are done, generate all step explanations in one batch."""
+    if st.session_state.get("llm_explanations") is None:
+        st.session_state["llm_explanations"] = {}
+
+    max_steps = int(st.session_state.get("max_steps", 0))
+    if max_steps <= 0:
+        return
+
+    step_labels = [
+        ("Optimal" if i == max_steps else f"Intermediate repair (step {i})")
+        for i in range(1, max_steps + 1)
+    ]
+
+    # Only generate missing ones
+    missing = [lab for lab in step_labels if not st.session_state["llm_explanations"].get(lab)]
+    if not missing:
+        return
+
+    # Mode 2: hard-coded
+    if EXPLANATION_TYPE == 2:
+        for lab in missing:
+            txt = _hardcoded_explanation_for_label(lab)
+            if txt and (not st.session_state["llm_explanations"].get(lab)):
+                st.session_state["llm_explanations"][lab] = txt
+        return
+
+    payloads = []
+    for lab in missing:
+        # runtime for steps is stored in runtime_steps list (aligned with partial_steps)
+        step_num = _parse_step_num_from_label(lab)
+        runtime_s = None
+        try:
+            if step_num is not None:
+                rts = st.session_state.get("runtime_steps") or []
+                if 1 <= step_num <= len(rts):
+                    runtime_s = rts[step_num - 1]
+        except Exception:
+            pass
+
+        payload = _build_llm_payload(lab, runtime_s=runtime_s)
+
+        # Mode 1: deterministic stats-only explanation
+        if EXPLANATION_TYPE == 1:
+            st.session_state["llm_explanations"][lab] = _format_stats_explanation(payload)
+        else:
+            payloads.append(payload)
+
+    if EXPLANATION_TYPE == 1:
+        return
+
+    # Mode 0: LLM batch
+    if explain_steps_batch is None:
+        for p in payloads:
+            lab = p.get("series_label")
+            if lab and (not st.session_state["llm_explanations"].get(lab)):
+                st.session_state["llm_explanations"][lab] = _baseline_explanation_from_payload(p)
+        return
+
+    try:
+        out = explain_steps_batch(payloads, model=st.session_state.get("llm_model", "gpt-5-mini"))
+        if isinstance(out, dict):
+            for lab, txt in out.items():
+                if txt and (not st.session_state["llm_explanations"].get(lab)):
+                    st.session_state["llm_explanations"][lab] = txt
+    except Exception:
+        # Fallback: deterministic explanations
+        for p in payloads:
+            lab = p.get("series_label")
+            if lab and (not st.session_state["llm_explanations"].get(lab)):
+                st.session_state["llm_explanations"][lab] = _baseline_explanation_from_payload(p)
+
+
+
 if hasattr(st, "dialog"):
 
     @st.dialog("Explanation")
@@ -798,6 +1151,8 @@ with controls_col:
         ["non-decreasing", "non-increasing"],
         index=0,
         )
+
+        st.session_state["trend_direction"] = trend_direction
 
         params_key = (uploaded_file.name, group_attr, agg_attr, agg_func)
 
@@ -857,9 +1212,25 @@ with controls_col:
             st.session_state["explain_open"] = False
             st.session_state["explain_payload"] = None
 
+            # LLM explanations (auto-generated)
+            st.session_state["llm_explanations"] = {}
+            st.session_state["pending_optimal_llm_batch"] = False
+            st.session_state["llm_model"] = "gpt-5-mini"
+
         tr = st.session_state["tr_obj"]
         max_steps = int(st.session_state.get("max_steps", 0))
         current_steps = len(st.session_state.get("partial_steps", []))
+
+        # Auto-generate LLM explanations for Optimal steps (batch) AFTER the smooth auto-run finishes.
+        if (
+            st.session_state.get("pending_optimal_llm_batch")
+            and not st.session_state.get("auto_in_progress", False)
+            and int(st.session_state.get("max_steps", 0) or 0) > 0
+            and len(st.session_state.get("partial_steps", [])) >= int(st.session_state.get("max_steps", 0) or 0)
+        ):
+            with st.spinner("Generating explanations for Optimal steps…"):
+                _auto_generate_optimal_batch_explanations()
+            st.session_state["pending_optimal_llm_batch"] = False
 
         st.divider()
         st.subheader("Run")
@@ -870,6 +1241,9 @@ with controls_col:
                 st.session_state["original_df"] = tr.run_query()
                 st.session_state["runtime_original"] = time.perf_counter() - t0
                 st.session_state["deleted_original"] = 0
+
+                # Auto-generate explanation for Original
+                _auto_generate_single_explanation("Original")
 
         if st.button("Heuristic", use_container_width=True):
             with st.spinner("Running heuristic repair…"):
@@ -885,6 +1259,7 @@ with controls_col:
                 st.session_state["runtime_heuristic"] = time.perf_counter() - t0
                 st.session_state["deleted_heuristic"] = int(heur_total_removed)
 
+
                 # Per-group tuple stats (for chart hover tooltips)
                 if getattr(tr, "heur_deleted_per_group", None) is not None:
                     st.session_state["heur_deleted_per_group"] = {
@@ -894,6 +1269,13 @@ with controls_col:
                     st.session_state["heur_left_per_group"] = {
                         str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
                     }
+
+                # If you might have generated a “stale” explanation earlier, clear it:
+                st.session_state.get("llm_explanations", {}).pop("Heuristic", None)
+
+                # Auto-generate explanation for Heuristic (now payload has real stats)
+                _auto_generate_single_explanation("Heuristic")
+
 
 
         step_done = (max_steps <= 0) or (current_steps >= max_steps)
@@ -912,6 +1294,10 @@ with controls_col:
                     st.session_state["heur_df"] = heur_trend_result
                     st.session_state["runtime_heuristic"] = time.perf_counter() - t0
                     st.session_state["deleted_heuristic"] = int(heur_total_removed)
+
+
+                    # Auto-generate explanation for Heuristic
+                    _auto_generate_single_explanation("Heuristic")
 
                     # Per-group tuple stats (for chart hover tooltips)
                     if getattr(tr, "heur_deleted_per_group", None) is not None:
@@ -1146,6 +1532,7 @@ Use the controls on the left to upload a dataset to begin.
                 # One rerun AFTER the whole smooth sequence:
                 # makes checkbox states become "only newest checked" without flicker per step
                 if last_step_num is not None:
+                    st.session_state["pending_optimal_llm_batch"] = True
                     st.session_state["pending_step_checkbox_reset"] = True
                     st.session_state["latest_step_for_reset"] = int(last_step_num)
                     st.rerun()

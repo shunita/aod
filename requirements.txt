@@ -3,3 +3,5 @@ streamlit
 sortedcontainers
 tqdm
 altair>=5
+openai>=1.0.0
+python-dotenv>=1.0.0
