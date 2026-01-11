@@ -19,6 +19,16 @@ class TrendRepair(object):
         self.aggregation_col = aggregation_col
         self.group_keys = sorted(self.df[self.grouping_col].unique())
 
+        # Per-group tuple counts in the original dataset (used for UI hover tooltips)
+        self.original_tuples_per_group = self.df.groupby(self.grouping_col, dropna=False).size()
+
+        # Will be populated after running heuristic / each DP step
+        self.heur_deleted_per_group = None
+        self.heur_left_per_group = None
+        self.last_step_deleted_per_group = None
+        self.last_step_left_per_group = None
+
+
         self.computed_dp_so_far = 0
         self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed, self.removed_by_heur = None, None, None, None
         self.inc_dp = None
@@ -36,6 +46,17 @@ class TrendRepair(object):
         trend_result = result_df.groupby(self.grouping_col)[self.aggregation_col].agg(pandas_function_map[self.agg_func]).reset_index() #.to_dict()
         removed_per_group = removed_df.groupby(self.grouping_col)[self.aggregation_col].agg("count")
         self.removed_by_heur = removed_df
+
+        # Per-group tuple stats (used for UI hover tooltips)
+        remaining_df = self.df.drop(index=removed_df.index, errors="ignore")
+        self.heur_left_per_group = remaining_df.groupby(self.grouping_col, dropna=False).size()
+        self.heur_left_per_group = self.heur_left_per_group.reindex(
+            self.original_tuples_per_group.index, fill_value=0
+        ).astype(int)
+        self.heur_deleted_per_group = self.original_tuples_per_group.subtract(
+            self.heur_left_per_group, fill_value=0
+        ).astype(int)
+
         self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed = trend_result, removed_per_group, len(removed_df)
         return trend_result, removed_per_group, len(removed_df)
 
@@ -82,6 +103,15 @@ class TrendRepair(object):
               "\nremaining in df: ", len(subset_df))
         intermediate_result = subset_df.groupby(self.grouping_col)[self.aggregation_col].agg(
             pandas_function_map[self.agg_func]).reset_index()
+        
+        # Per-group tuple stats for this intermediate solution (used for UI hover tooltips)
+        self.last_step_left_per_group = subset_df.groupby(self.grouping_col, dropna=False).size()
+        self.last_step_left_per_group = self.last_step_left_per_group.reindex(
+            self.original_tuples_per_group.index, fill_value=0
+        ).astype(int)
+        self.last_step_deleted_per_group = self.original_tuples_per_group.subtract(
+            self.last_step_left_per_group, fill_value=0
+        ).astype(int)
 
         self.computed_dp_so_far += 1
         return intermediate_result
