@@ -7,7 +7,7 @@ import re
 
 from trend_demo_api import TrendRepair
 try:
-    from llm_explainer_old import explain_step, explain_steps_batch
+    from llm_explainer import explain_step, explain_steps_batch
 except Exception:
     explain_step = None
     explain_steps_batch = None
@@ -18,7 +18,7 @@ except Exception:
     hardcoded_explanations = None
 
 IS_SLEEP = True
-USE_LIGHT_BG = False
+USE_LIGHT_BG = True
 HEURISTIC_COLOR = "#fca5a5"
 FIRST_STEP_COLOR = (252, 165, 165)  # light red
 OPTIMAL_COLOR = (134, 239, 172)  # light green
@@ -29,7 +29,7 @@ NARROW_BARS = False
 # 0 = LLM  
 # 1 = Stats-only 
 # 2 = Hard-coded
-EXPLANATION_TYPE = 0
+EXPLANATION_TYPE = 2
 
 st.set_page_config(page_title="MonoTune: Analyze Trend Deviations", layout="wide")
 st.title("MonoTune: Analyze Trend Deviations")
@@ -69,6 +69,13 @@ if USE_LIGHT_BG:
             border-color: rgba(0,0,0,0.20) !important;
           }
 
+          /*  Select dropdown arrow (caret) in light mode  */
+          div[data-baseweb="select"] svg,
+          div[data-baseweb="select"] svg *{
+            fill: #111111 !important;
+            stroke: #111111 !important;
+          }
+
           /*  BaseWeb portal layer (opened dropdown menus + popovers content)  */
           div[data-baseweb="layer"]{
             color: #111111 !important;
@@ -98,18 +105,71 @@ if USE_LIGHT_BG:
             background-color: #e5e7eb !important;
           }
 
-          /*  Keep file uploader dark */
+
+          /*  Expander (st.expander) should stay light even when open  */
+          details[data-testid="stExpander"],
+          div[data-testid="stExpander"] details{
+            background-color: #ffffff !important;
+            border: 1px solid rgba(0,0,0,0.15) !important;
+            border-radius: 8px !important;
+          }
+          details[data-testid="stExpander"] > summary,
+          div[data-testid="stExpander"] summary{
+            background-color: #f3f4f6 !important;
+            color: #111111 !important;
+            border-radius: 8px !important;
+          }
+          details[data-testid="stExpander"][open] > summary,
+          div[data-testid="stExpander"] details[open] > summary{
+            background-color: #f3f4f6 !important;
+            color: #111111 !important;
+          }
+          details[data-testid="stExpander"] > summary span,
+          div[data-testid="stExpander"] summary span{
+            color: #111111 !important;
+          }
+          details[data-testid="stExpander"] > summary svg,
+          div[data-testid="stExpander"] summary svg{
+            fill: #111111 !important;
+            stroke: #111111 !important;
+          }
+          details[data-testid="stExpander"] > div,
+          div[data-testid="stExpander"] details > div{
+            background-color: #ffffff !important;
+            color: #111111 !important;
+          }
+
+          /*  File uploader (light mode) */
           div[data-testid="stFileUploader"] section{
-            background: #111827 !important;
-            border-color: rgba(255,255,255,0.22) !important;
+            background: #ffffff !important;
+            border-color: rgba(0,0,0,0.20) !important;
           }
           div[data-testid="stFileUploader"] *{
-            color: rgba(255,255,255,0.92) !important;
+            color: #111111 !important;
+          }
+          div[data-testid="stFileUploader"] svg,
+          div[data-testid="stFileUploader"] svg *{
+            fill: #111111 !important;
+            stroke: #111111 !important;
           }
           div[data-testid="stFileUploader"] button{
-            background: #0f172a !important;
-            color: #ffffff !important;
-            border: 1px solid rgba(255,255,255,0.22) !important;
+            background: #f3f4f6 !important;
+            color: #111111 !important;
+            border: 1px solid rgba(0,0,0,0.20) !important;
+          }
+
+          div[data-testid="stFileUploader"] svg{
+          background: transparent !important;
+          }
+          div[data-testid="stFileUploader"] svg rect{
+          fill: none !important;
+          }
+          div[data-testid="stFileUploader"] svg path,
+          div[data-testid="stFileUploader"] svg line,
+          div[data-testid="stFileUploader"] svg polyline,
+          div[data-testid="stFileUploader"] svg circle{
+          stroke: #111111 !important;
+          fill: none !important;
           }
 
           /*  st.dialog in light mode  */
@@ -135,6 +195,34 @@ if USE_LIGHT_BG:
         div.stDownloadButton > button:hover {
         background-color: #e5e7eb !important;
         }
+
+        /* tight spacing */
+        div[data-testid="stRadio"]{
+        margin-bottom: -2.6rem !important;
+        padding-bottom: 0 !important;
+        }
+
+        /* kill divider spacing but keep the line */
+        div[data-testid="stDivider"]{
+        margin-top: -1.6rem !important;
+        margin-bottom: -1.1rem !important;
+        padding: 0 !important;
+        }
+        div[data-testid="stDivider"] hr{
+        margin: 0 !important;
+        }
+
+        /* Run header spacing */
+        div[data-testid="stSubheader"]{
+        margin-top: -1.8rem !important;
+        margin-bottom: -0.4rem !important;
+        padding: 0 !important;
+        }
+        div[data-testid="stSubheader"] h3{
+        margin: 0 !important;
+        padding: 0 !important;
+        line-height: 1.0 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -157,6 +245,34 @@ else:
           div[data-testid='stDialog'] li {
             color: #ffffff;
           }
+
+        /* tight spacing */
+        div[data-testid="stRadio"]{
+        margin-bottom: -2.6rem !important;
+        padding-bottom: 0 !important;
+        }
+
+        /* kill divider spacing but keep the line */
+        div[data-testid="stDivider"]{
+        margin-top: -1.6rem !important;
+        margin-bottom: -1.1rem !important;
+        padding: 0 !important;
+        }
+        div[data-testid="stDivider"] hr{
+        margin: 0 !important;
+        }
+
+        /* Run header spacing */
+        div[data-testid="stSubheader"]{
+        margin-top: -1.8rem !important;
+        margin-bottom: -0.4rem !important;
+        padding: 0 !important;
+        }
+        div[data-testid="stSubheader"] h3{
+        margin: 0 !important;
+        padding: 0 !important;
+        line-height: 1.0 !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1150,6 +1266,7 @@ with controls_col:
         "Trend direction",
         ["non-decreasing", "non-increasing"],
         index=0,
+        horizontal=True,
         )
 
         st.session_state["trend_direction"] = trend_direction
