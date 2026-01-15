@@ -1,4 +1,7 @@
 import os
+import pandas as pd
+import numpy as np
+from scipy.stats import entropy
 from DP.optimal_subset_with_constraint_unified import IncrementalDP
 from Heuristic.aggr_main import greedy_algorithm
 
@@ -31,6 +34,7 @@ class TrendRepair(object):
 
         self.computed_dp_so_far = 0
         self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed, self.removed_by_heur = None, None, None, None
+        self.removed_by_dp_step = []
         self.inc_dp = None
 
 
@@ -97,6 +101,7 @@ class TrendRepair(object):
         print("remaining group_keys: ", remaining_group_keys, "tuples removed by heur from groups i+1 to n: ", removed_tuples_from_i_plus_1)
         # combine the solutions
         all_removed_index = removed_tuples_up_to_i.index.append(removed_tuples_from_i_plus_1.index)
+        self.removed_by_dp_step.append(self.df[self.df.index.isin(all_removed_index)])
         subset_df = self.df[~self.df.index.isin(all_removed_index)]
         print("initial df size: ", len(self.df),
               "\ntotal removed index: ", len(all_removed_index),
@@ -115,3 +120,187 @@ class TrendRepair(object):
 
         self.computed_dp_so_far += 1
         return intermediate_result
+
+
+    def summarize_distribution_differences(self,
+                                           repair_name,
+            # removed_subset: pd.DataFrame,
+            k: int = 5,
+            epsilon: float = 1e-8,
+            ignore_columns=None
+    ):
+        """
+        Compare value distributions between a subset of rows and the rest
+        of the DataFrame using KL divergence.
+
+        Parameters
+        ----------
+        repair_name: "heuristic" or DP step number
+        k : int
+            Number of top attributes to return.
+        epsilon : float
+            Smoothing constant to avoid zero probabilities.
+        ignore_columns : list or None
+            Columns to skip (e.g., IDs, continuous columns).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns:
+            - attribute
+            - kl_divergence
+            - subset_distribution
+            - rest_distribution
+        """
+        if ignore_columns is None:
+            ignore_columns = [self.aggregation_col, self.grouping_col]
+
+        if repair_name == "heuristic":
+            removed_subset = self.removed_by_heur
+        else:
+            removed_subset = self.removed_by_dp_step[-1]
+        rest = self.df[~self.df.index.isin(removed_subset.index)]
+
+        results = []
+
+        for col in self.df.columns:
+            if col in ignore_columns:
+                continue
+
+            # Skip non-categorical columns
+            if not pd.api.types.is_object_dtype(self.df[col]) \
+                    and not pd.api.types.is_categorical_dtype(self.df[col]):
+                continue
+
+            # Align value supports
+            subset_counts = removed_subset[col].value_counts(normalize=True)
+            rest_counts = rest[col].value_counts(normalize=True)
+
+            all_values = subset_counts.index.union(rest_counts.index)
+
+            p = subset_counts.reindex(all_values, fill_value=0.0) + epsilon
+            q = rest_counts.reindex(all_values, fill_value=0.0) + epsilon
+
+            # Normalize after smoothing
+            p /= p.sum()
+            q /= q.sum()
+
+            kl = entropy(p, q)
+
+            # subset_distrib_summary = ", ".join([f"{v}: {freq:.2f}" for v, freq in p.to_dict().items()])
+            # rest_distrib_summary = ", ".join([f"{v}: {freq:.2f}" for v, freq in q.to_dict().items()])
+            results.append({
+                "attribute": col,
+                "kl_divergence": kl,
+                "subset_distribution": p.to_dict(),
+                "rest_distribution": q.to_dict(),
+                # "subset_distribution": subset_distrib_summary,
+                # "rest_distribution": rest_distrib_summary,
+            })
+
+        result_df = pd.DataFrame(results)
+        result_df = result_df.sort_values("kl_divergence", ascending=False)
+
+        print(result_df)
+
+        textual_summary = []
+
+        for row in results[:k]:
+            textual_summary.append(f"Attribute: {row['attribute']}")
+            table = textify_distribution_table(row['subset_distribution'], row['rest_distribution'])
+            textual_summary.extend(table)
+
+        # return result_df.head(k)
+        return textual_summary
+
+def textify_distribution_table(
+    dist_a: dict,
+    dist_b: dict,
+    name_a: str = "Removed",
+    name_b: str = "Rest",
+    # decimals: int = 3,
+    sort_by: str = "abs_diff",  # "abs_diff", "diff", "a", "b", "value"
+    min_freq: float = 0.001
+):
+    """
+    Print a text table comparing two discrete distributions.
+
+    Parameters
+    ----------
+    dist_a, dist_b : dict
+        value -> frequency (sums to 1)
+    name_a, name_b : str
+        Column names.
+    decimals : int
+        Number of decimal places.
+    sort_by : str
+        Sorting criterion.
+    min_freq : float
+        Drop rows where both frequencies are below this threshold.
+    """
+
+    values = sorted(set(dist_a) | set(dist_b))
+
+    rows = []
+    for v in values:
+        a = dist_a.get(v, 0.0)
+        b = dist_b.get(v, 0.0)
+
+        if a < min_freq and b < min_freq:
+            continue
+
+        rows.append({
+            "value": str(v),
+            name_a: a,
+            name_b: b,
+            "Δ": a - b,
+        })
+
+    if sort_by == "abs_diff":
+        rows.sort(key=lambda r: abs(r["Δ"]), reverse=True)
+    elif sort_by == "diff":
+        rows.sort(key=lambda r: r["Δ"], reverse=True)
+    elif sort_by == "a":
+        rows.sort(key=lambda r: r[name_a], reverse=True)
+    elif sort_by == "b":
+        rows.sort(key=lambda r: r[name_b], reverse=True)
+    elif sort_by == "value":
+        rows.sort(key=lambda r: r["value"])
+
+    # Column widths
+    # w_val = max(len("Value"), *(len(r["value"]) for r in rows))
+    # w_a = max(len(name_a), *(len(f"{r[name_a]:.{decimals}f}") for r in rows))
+    # w_b = max(len(name_b), *(len(f"{r[name_b]:.{decimals}f}") for r in rows))
+    # w_d = max(len("Δ"), *(len(f"{r['Δ']:+.{decimals}f}") for r in rows))
+
+    # Header
+    # header = (
+    #     f"{'Value':<{w_val}}  "
+    #     f"{name_a:>{w_a}}  "
+    #     f"{name_b:>{w_b}}  "
+    #     f"{'Δ':>{w_d}}"
+    # )
+
+    header = f"Value +{name_a}+ {name_b}, diff"
+    sep = "-" * len(header)
+
+    output = [header, sep]
+    # print(header)
+    # print(sep)
+
+    # Rows
+    for r in rows:
+        # output.append(
+        #     f"{r['value']:<{w_val}}  "
+        #     f"{r[name_a]:>{w_a}.{decimals}f}  "
+        #     f"{r[name_b]:>{w_b}.{decimals}f}  "
+        #     f"{r['Δ']:>{w_d}+.{decimals}f}"
+        # )
+        output.append(
+            f"{r['value']}, {r[name_a]:.2f}, {r[name_b]:.2f}" #, {r['Δ']:.2f}"
+            # f"{r['value']:<{w_val}}  "
+            # f"{r[name_a]:>{w_a}.{decimals}f}  "
+            # f"{r[name_b]:>{w_b}.{decimals}f}  "
+            # f"{r['Δ']:>{w_d}+.{decimals}f}"
+        )
+    return output
