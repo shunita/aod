@@ -29,7 +29,7 @@ NARROW_BARS = False
 # 0 = LLM  
 # 1 = Stats-only 
 # 2 = Hard-coded
-EXPLANATION_TYPE = 2
+EXPLANATION_TYPE = 0
 
 st.set_page_config(page_title="MonoTune: Analyze Trend Deviations", layout="wide")
 st.title("MonoTune: Analyze Trend Deviations")
@@ -939,6 +939,7 @@ def _build_llm_payload(label: str, runtime_s=None):
 
     deleted_map = {}
     left_map = {}
+    attributes_with_high_diff = None
 
     if label == "Original":
         deleted_map = {str(k): 0 for k in original_counts.keys()}
@@ -946,6 +947,7 @@ def _build_llm_payload(label: str, runtime_s=None):
     elif label == "Heuristic":
         deleted_map = st.session_state.get("heur_deleted_per_group") or {}
         left_map = st.session_state.get("heur_left_per_group") or {}
+        attributes_with_high_diff = tr.summarize_distribution_differences("heuristic")
     else:
         step_num = _parse_step_num_from_label(label)
         if step_num is not None:
@@ -955,6 +957,7 @@ def _build_llm_payload(label: str, runtime_s=None):
                 deleted_map = deleted_steps[step_num - 1] or {}
             if 1 <= step_num <= len(left_steps):
                 left_map = left_steps[step_num - 1] or {}
+            attributes_with_high_diff = tr.summarize_distribution_differences(step_num)
 
     # normalize keys to str/int
     def _get_int(m, k, default=0):
@@ -1003,6 +1006,7 @@ def _build_llm_payload(label: str, runtime_s=None):
             for r in top_groups
         ],
         "runtime_s": runtime_s,
+        "attributes_with_high_diff": "\n".join(attributes_with_high_diff) if attributes_with_high_diff is not None else "",
     }
     return payload
 
@@ -1016,6 +1020,9 @@ def _baseline_explanation_from_payload(payload: dict) -> str:
     q = payload.get("query") or {}
     totals = payload.get("totals") or {}
     top = payload.get("top_groups_by_deleted") or []
+    # TODO possibly there should be an instance of attrs with high diff for each repair.
+    attributes_with_high_diff = None
+    attributes_with_high_diff = payload.get("attributes_with_high_diff")
 
     group_attr = q.get("group_attr")
     agg_attr = q.get("agg_attr")
@@ -1067,6 +1074,10 @@ def _baseline_explanation_from_payload(payload: dict) -> str:
         lines.append("Greedy heuristic repair: deletes tuples to reduce/eliminate trend violations (not globally optimal).")
     elif isinstance(label, str) and (label == "Optimal" or label.startswith("Intermediate repair (step ")):
         lines.append("Optimal (DP) repair shown step-by-step (intermediate steps may combine DP prefix + heuristic suffix).")
+
+    lines.append("Attributes with largest differences:")
+    if attributes_with_high_diff is not None:
+        lines.append(attributes_with_high_diff)
 
     return "\n".join([ln for ln in lines if ln is not None])
 
