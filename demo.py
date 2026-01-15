@@ -196,12 +196,6 @@ if USE_LIGHT_BG:
         background-color: #e5e7eb !important;
         }
 
-        /* tight spacing */
-        div[data-testid="stRadio"]{
-        margin-bottom: -2.6rem !important;
-        padding-bottom: 0 !important;
-        }
-
         /* kill divider spacing but keep the line */
         div[data-testid="stDivider"]{
         margin-top: -1.6rem !important;
@@ -245,12 +239,6 @@ else:
           div[data-testid='stDialog'] li {
             color: #ffffff;
           }
-
-        /* tight spacing */
-        div[data-testid="stRadio"]{
-        margin-bottom: -2.6rem !important;
-        padding-bottom: 0 !important;
-        }
 
         /* kill divider spacing but keep the line */
         div[data-testid="stDivider"]{
@@ -1301,6 +1289,13 @@ with controls_col:
                     unnamed_cols = [c for c in df.columns if c.startswith("Unnamed")]
                     if unnamed_cols:
                         df = df.drop(columns=unnamed_cols)
+                    # Clean up corrupted Unicode characters (replacement char sequences -> apostrophe)
+                    # When UTF-8 replacement char (ef bf bd) is read as latin-1, it becomes these chars
+                    corrupted_apostrophe = chr(0xef) + chr(0xbf) + chr(0xbd)
+                    for col in df.select_dtypes(include=["object"]).columns:
+                        # Replace multiple replacement chars with single apostrophe
+                        df[col] = df[col].str.replace(corrupted_apostrophe + corrupted_apostrophe + corrupted_apostrophe, "'", regex=False)
+                        df[col] = df[col].str.replace(corrupted_apostrophe, "'", regex=False)
                     data_key = example_path
                     st.success(f"Loaded: {selected_example}")
             except Exception as e:
@@ -1324,9 +1319,11 @@ with controls_col:
     else:
         # Filter columns to exclude non-useful ones for grouping
         available_columns = [c for c in df.columns if not c.startswith("Unnamed")]
+        # Only numeric columns can be aggregated
+        numeric_columns = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
         group_attr = st.selectbox("Grouping attribute", available_columns, key="group_attr_select")
-        agg_attr = st.selectbox("Aggregation attribute", available_columns, key="agg_attr_select")
+        agg_attr = st.selectbox("Aggregation attribute", numeric_columns, key="agg_attr_select")
         agg_func = st.selectbox("Aggregation function", ["sum", "avg", "median", "max"], key="agg_func_select")
 
         st.markdown("")  # spacing
