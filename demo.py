@@ -11,16 +11,20 @@ from trend_demo_api import TrendRepair
 # Configure logging for silent exceptions
 logging.basicConfig(level=logging.WARNING)
 _logger = logging.getLogger(__name__)
+
+explain_step = None
+explain_steps_batch = None
+DEFAULT_MODEL = None
 try:
     from llm_explainer import explain_step, explain_steps_batch, DEFAULT_MODEL
 except Exception:
-    explain_step = None
-    explain_steps_batch = None
+    _logger.warning("llm_explainer failed to load")
 
+hardcoded_explanations = None
 try:
     import hardcoded_explanations
 except Exception:
-    hardcoded_explanations = None
+    _logger.warning("Hardcoded explanations are not available")
 
 IS_SLEEP = True
 USE_LIGHT_BG = True
