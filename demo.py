@@ -32,7 +32,10 @@ NARROW_BARS = False
 EXPLANATION_TYPE = 0
 
 st.set_page_config(page_title="MonoTune: Analyze Trend Deviations", layout="wide")
-st.title("MonoTune: Analyze Trend Deviations")
+st.markdown(
+    "<h3 style='margin-bottom: 0.5rem;'>MonoTune: Analyze Trend Deviations</h3>",
+    unsafe_allow_html=True,
+)
 
 
 # If you change EXPLANATION_TYPE in the code, reset cached explanations automatically.
@@ -1244,206 +1247,303 @@ def _maybe_show_explanation_dialog():
     st.session_state["explain_open"] = False
 
 
-# Layout: left controls, right output
+# Example datasets available in data/ folder
+EXAMPLE_DATASETS = {
+    # "Stack Overflow (Binned Salary)": "data/SO/so_clean_for_trend_outliers_binned_salary.csv",
+    "Salary by Education (Stack Overflow)": "data/SO/so_concise_for_edlevel_median_USA.csv",
+    "Diabetes by Age": "data/diabetes/diabetes_prediction_dataset_binned_age.csv",
+    "Loans by Employment Time (German Credit)": "data/german_credit/german_textual.csv",
+}
+UPLOAD_OPTION = "Upload your own..."
+
+# Helper function to clean loaded dataframe
+def _clean_dataframe(dataframe):
+    # Drop unnamed index columns
+    unnamed_cols = [c for c in dataframe.columns if c.startswith("Unnamed")]
+    if unnamed_cols:
+        dataframe = dataframe.drop(columns=unnamed_cols)
+    # Clean up corrupted Unicode characters (replacement char sequences -> apostrophe)
+    corrupted_base = chr(0xef) + chr(0xbf) + chr(0xbd)
+    corrupted_with_trailing = corrupted_base + chr(0xef)
+    for col in dataframe.select_dtypes(include=["object"]).columns:
+        dataframe[col] = dataframe[col].str.replace(corrupted_base * 3, "'", regex=False)
+        dataframe[col] = dataframe[col].str.replace(corrupted_with_trailing, "'", regex=False)
+        dataframe[col] = dataframe[col].str.replace(corrupted_base, "'", regex=False)
+    return dataframe
+
+# --- Dataset Loading (before layout) ---
+# Use a separate session state key to track loaded dataset (not the widget key)
+selected_dataset = st.session_state.get("loaded_dataset_name", None)
+df = st.session_state.get("loaded_dataset_df", None)
+data_key = st.session_state.get("loaded_dataset_key", None)
+
+has_data = df is not None
+
+# --- Welcome Screen (no dataset selected) ---
+if not has_data:
+    st.markdown("---")
+    wcol1, wcol2, wcol3 = st.columns([1, 2, 1])
+    with wcol2:
+        st.markdown("### Select a Dataset")
+        dataset_options = ["-- Select a dataset --"] + list(EXAMPLE_DATASETS.keys()) + [UPLOAD_OPTION]
+        selected = st.selectbox(
+            "Choose a dataset",
+            dataset_options,
+            key="welcome_dataset_select",
+            label_visibility="collapsed",
+        )
+
+        if selected == UPLOAD_OPTION:
+            uploaded = st.file_uploader(
+                "Drag and drop a CSV file",
+                type=["csv"],
+                key="welcome_uploader",
+            )
+            if uploaded is not None:
+                try:
+                    loaded_df = pd.read_csv(uploaded)
+                    loaded_df = _clean_dataframe(loaded_df)
+                    st.session_state["loaded_dataset_name"] = uploaded.name
+                    st.session_state["loaded_dataset_df"] = loaded_df
+                    st.session_state["loaded_dataset_key"] = uploaded.name
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to load CSV: {e}")
+
+        elif selected and selected != "-- Select a dataset --":
+            # Load the example dataset
+            example_path = EXAMPLE_DATASETS.get(selected)
+            if example_path:
+                try:
+                    loaded_df = None
+                    for encoding in ["utf-8", "latin-1", "cp1252"]:
+                        try:
+                            loaded_df = pd.read_csv(example_path, encoding=encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if loaded_df is not None:
+                        loaded_df = _clean_dataframe(loaded_df)
+                        st.session_state["loaded_dataset_name"] = selected
+                        st.session_state["loaded_dataset_df"] = loaded_df
+                        st.session_state["loaded_dataset_key"] = example_path
+                        st.rerun()
+                    else:
+                        st.error("Failed to load dataset: encoding error")
+                except Exception as e:
+                    st.error(f"Failed to load dataset: {e}")
+
+        st.markdown("---")
+        st.markdown(
+            """
+**How it works:**
+1. Choose a **grouping attribute** and **aggregation function**
+2. View the **original trend** with violations highlighted
+3. Compare **heuristic** (fast) vs **optimal** (DP) repairs
+4. See which tuples are removed to restore monotonicity
+            """
+        )
+    st.stop()
+
+# --- Main Layout (dataset selected) ---
 controls_col, output_col = st.columns([1, 3], gap="large")
 
 with controls_col:
-    st.header("Controls")
+    st.subheader("Query")
 
-    # Example datasets available in data/ folder
-    EXAMPLE_DATASETS = {
-        "Stack Overflow (Binned Salary)": "data/SO/so_clean_for_trend_outliers_binned_salary.csv",
-        "Stack Overflow (Salary by Education)": "data/SO/so_concise_for_edlevel_median_USA.csv",
-        "Diabetes (Binned Age)": "data/diabetes/diabetes_prediction_dataset_binned_age.csv",
-        "German Credit": "data/german_credit/german_textual.csv",
-    }
+    # Filter columns to exclude non-useful ones for grouping
+    available_columns = [c for c in df.columns if not c.startswith("Unnamed")]
+    # Only numeric columns can be aggregated
+    numeric_columns = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
-    data_source = st.radio(
-        "Data source",
-        ["Example dataset", "Upload CSV"],
+    group_attr = st.selectbox("Grouping attribute", available_columns, key="group_attr_select")
+    agg_attr = st.selectbox("Aggregation attribute", numeric_columns, key="agg_attr_select")
+    agg_func = st.selectbox("Aggregation function", ["sum", "avg", "median", "max"], key="agg_func_select")
+    trend_direction = st.radio(
+        "Trend direction",
+        ["non-decreasing", "non-increasing"],
         index=0,
         horizontal=True,
-        key="data_source_radio",
+        key="trend_direction_radio",
     )
 
-    df = None
-    data_key = None
+    st.session_state["trend_direction"] = trend_direction
 
-    if data_source == "Example dataset":
-        example_options = ["-- Select a dataset --"] + list(EXAMPLE_DATASETS.keys())
-        selected_example = st.selectbox("Select dataset", example_options, key="example_dataset_select")
-        if selected_example != "-- Select a dataset --":
-            example_path = EXAMPLE_DATASETS[selected_example]
-            try:
-                # Try different encodings for CSV files
-                for encoding in ["utf-8", "latin-1", "cp1252"]:
-                    try:
-                        df = pd.read_csv(example_path, encoding=encoding)
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                if df is None:
-                    st.error("Failed to load dataset: encoding error")
-                else:
-                    # Drop unnamed index columns
-                    unnamed_cols = [c for c in df.columns if c.startswith("Unnamed")]
-                    if unnamed_cols:
-                        df = df.drop(columns=unnamed_cols)
-                    # Clean up corrupted Unicode characters (replacement char sequences -> apostrophe)
-                    # When UTF-8 replacement char (ef bf bd) is read as latin-1, it becomes these chars
-                    corrupted_apostrophe = chr(0xef) + chr(0xbf) + chr(0xbd)
-                    for col in df.select_dtypes(include=["object"]).columns:
-                        # Replace multiple replacement chars with single apostrophe
-                        df[col] = df[col].str.replace(corrupted_apostrophe + corrupted_apostrophe + corrupted_apostrophe, "'", regex=False)
-                        df[col] = df[col].str.replace(corrupted_apostrophe, "'", regex=False)
-                    data_key = example_path
-                    st.success(f"Loaded: {selected_example}")
-            except Exception as e:
-                st.error(f"Failed to load example dataset: {e}")
-    else:
-        uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
-        if uploaded_file is not None:
-            try:
-                df = pd.read_csv(uploaded_file)
-                # Drop unnamed index columns
-                unnamed_cols = [c for c in df.columns if c.startswith("Unnamed")]
-                if unnamed_cols:
-                    df = df.drop(columns=unnamed_cols)
-                data_key = uploaded_file.name
-            except Exception as e:
-                st.error(f"Failed to load CSV: {e}")
+    params_key = (data_key, group_attr, agg_attr, agg_func)
 
-    has_data = df is not None
-    if not has_data:
-        st.info("Select an example dataset or upload a CSV to begin.")
-    else:
-        # Filter columns to exclude non-useful ones for grouping
-        available_columns = [c for c in df.columns if not c.startswith("Unnamed")]
-        # Only numeric columns can be aggregated
-        numeric_columns = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    if st.session_state.get("params_key") != params_key:
+        st.session_state["params_key"] = params_key
+        st.session_state["tr_obj"] = TrendRepair(df, agg_func, group_attr, agg_attr)
 
-        group_attr = st.selectbox("Grouping attribute", available_columns, key="group_attr_select")
-        agg_attr = st.selectbox("Aggregation attribute", numeric_columns, key="agg_attr_select")
-        agg_func = st.selectbox("Aggregation function", ["sum", "avg", "median", "max"], key="agg_func_select")
+        # Per-group tuple counts (for chart hover tooltips)
+        _tuple_counts = df.groupby(group_attr, dropna=False).size()
+        st.session_state["tuple_counts_per_group"] = {str(k): int(v) for k, v in _tuple_counts.to_dict().items()}
 
-        st.markdown("")  # spacing
-        trend_direction = st.radio(
-            "Trend direction",
-            ["non-decreasing", "non-increasing"],
-            index=0,
-            horizontal=True,
-            key="trend_direction_radio",
-        )
+        # Per-group tuple stats for each series (filled as series are computed)
+        st.session_state["heur_deleted_per_group"] = {}
+        st.session_state["heur_left_per_group"] = {}
+        st.session_state["step_deleted_per_group"] = []
+        st.session_state["step_left_per_group"] = []
 
-        st.session_state["trend_direction"] = trend_direction
+        st.session_state["original_df"] = None
+        st.session_state["heur_df"] = None
+        st.session_state["partial_steps"] = []
 
-        params_key = (data_key, group_attr, agg_attr, agg_func)
+        st.session_state["runtime_original"] = None
+        st.session_state["runtime_heuristic"] = None
+        st.session_state["runtime_steps"] = []
+        st.session_state["deleted_original"] = 0
+        st.session_state["deleted_heuristic"] = None
+        st.session_state["deleted_steps"] = []
 
-        if st.session_state.get("params_key") != params_key:
-            st.session_state["params_key"] = params_key
+        # clear old step checkboxes from previous query runs
+        for k in list(st.session_state.keys()):
+            if k.startswith("cb_show_step_"):
+                del st.session_state[k]
 
-            st.session_state["tr_obj"] = TrendRepair(df, agg_func, group_attr, agg_attr)
+        num_groups = len(st.session_state["tr_obj"].group_keys)
+        st.session_state["max_steps"] = max(num_groups, 0)
 
-            # Per-group tuple counts (for chart hover tooltips)
-            _tuple_counts = df.groupby(group_attr, dropna=False).size()
-            st.session_state["tuple_counts_per_group"] = {str(k): int(v) for k, v in _tuple_counts.to_dict().items()}
-
-            # Per-group tuple stats for each series (filled as series are computed)
-            st.session_state["heur_deleted_per_group"] = {}
-            st.session_state["heur_left_per_group"] = {}
-            st.session_state["step_deleted_per_group"] = []
-            st.session_state["step_left_per_group"] = []
-
-            st.session_state["original_df"] = None
-            st.session_state["heur_df"] = None
-            st.session_state["partial_steps"] = []
-
-            st.session_state["runtime_original"] = None
-            st.session_state["runtime_heuristic"] = None
-            st.session_state["runtime_steps"] = []
-            st.session_state["deleted_original"] = 0
-            st.session_state["deleted_heuristic"] = None
-            st.session_state["deleted_steps"] = []
-
-            # clear old step checkboxes from previous query runs
-            for k in list(st.session_state.keys()):
-                if k.startswith("cb_show_step_"):
-                    del st.session_state[k]
-
-            num_groups = len(st.session_state["tr_obj"].group_keys)
-            st.session_state["max_steps"] = max(num_groups, 0)
-
-            max_steps = int(st.session_state.get("max_steps", 0))
-            step_labels = [
-                ("Optimal" if i == max_steps else f"Intermediate repair (step {i})")
-                for i in range(1, max_steps + 1)
-            ]
-            step_colors = _make_step_palette(len(step_labels))
-            st.session_state["SERIES_DOMAIN"] = ["Original", "Heuristic"] + step_labels
-            st.session_state["SERIES_RANGE"] = ["#9ecae1", HEURISTIC_COLOR] + step_colors
-
-            st.session_state["cb_show_original"] = True
-            st.session_state["cb_show_heuristic"] = True
-
-            st.session_state["run_optimal_seq"] = False
-            st.session_state["auto_in_progress"] = False
-            st.session_state["auto_visible_step"] = None
-            st.session_state["pending_step_checkbox_reset"] = False
-            st.session_state["latest_step_for_reset"] = None
-
-            # explanation modal state
-            st.session_state["explain_open"] = False
-            st.session_state["explain_payload"] = None
-
-            # LLM explanations (auto-generated)
-            st.session_state["llm_explanations"] = {}
-            st.session_state["pending_optimal_llm_batch"] = False
-            st.session_state["llm_model"] = "gpt-5-mini"
-
-        tr = st.session_state["tr_obj"]
         max_steps = int(st.session_state.get("max_steps", 0))
-        current_steps = len(st.session_state.get("partial_steps", []))
+        step_labels = [
+            ("Optimal" if i == max_steps else f"Intermediate repair (step {i})")
+            for i in range(1, max_steps + 1)
+        ]
+        step_colors = _make_step_palette(len(step_labels))
+        st.session_state["SERIES_DOMAIN"] = ["Original", "Heuristic"] + step_labels
+        st.session_state["SERIES_RANGE"] = ["#9ecae1", HEURISTIC_COLOR] + step_colors
 
-        # Auto-generate LLM explanations for Optimal steps (batch) AFTER the smooth auto-run finishes.
-        if (
-            st.session_state.get("pending_optimal_llm_batch")
-            and not st.session_state.get("auto_in_progress", False)
-            and int(st.session_state.get("max_steps", 0) or 0) > 0
-            and len(st.session_state.get("partial_steps", [])) >= int(st.session_state.get("max_steps", 0) or 0)
-        ):
-            with st.spinner("Generating explanations for Optimal steps…"):
-                _auto_generate_optimal_batch_explanations()
-            st.session_state["pending_optimal_llm_batch"] = False
+        st.session_state["cb_show_original"] = True
+        st.session_state["cb_show_heuristic"] = True
 
-        st.divider()
-        st.subheader("Run")
+        st.session_state["run_optimal_seq"] = False
+        st.session_state["auto_in_progress"] = False
+        st.session_state["auto_visible_step"] = None
+        st.session_state["pending_step_checkbox_reset"] = False
+        st.session_state["latest_step_for_reset"] = None
 
-        if st.button("Original data", use_container_width=True):
-            with st.spinner("Running original query…"):
+        # explanation modal state
+        st.session_state["explain_open"] = False
+        st.session_state["explain_payload"] = None
+
+        # LLM explanations (auto-generated)
+        st.session_state["llm_explanations"] = {}
+        st.session_state["pending_optimal_llm_batch"] = False
+        st.session_state["llm_model"] = "gpt-5-mini"
+
+    # "Change dataset" button
+    st.divider()
+    if st.button("Change dataset", use_container_width=True):
+        # Clear loaded dataset from session state
+        st.session_state.pop("loaded_dataset_name", None)
+        st.session_state.pop("loaded_dataset_df", None)
+        st.session_state.pop("loaded_dataset_key", None)
+        st.session_state.pop("params_key", None)
+        st.session_state.pop("tr_obj", None)
+        st.rerun()
+
+# Store references for Run buttons in output_col
+tr = st.session_state.get("tr_obj")
+max_steps = int(st.session_state.get("max_steps", 0))
+current_steps = len(st.session_state.get("partial_steps", []))
+
+with output_col:
+    # Query description banner
+    query_sql = f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}"
+
+    q_fg = "#111111" if USE_LIGHT_BG else "#ffffff"
+    q_bg = "rgba(0,0,0,0.04)" if USE_LIGHT_BG else "rgba(255,255,255,0.06)"
+    q_border = "rgba(0,0,0,0.12)" if USE_LIGHT_BG else "rgba(255,255,255,0.10)"
+
+    st.markdown(
+        f"""
+        <div style="
+            text-align:center;
+            font-size:24px;
+            font-weight:600;
+            color:{q_fg};
+            padding:10px 14px;
+            border-radius:10px;
+            background: {q_bg};
+            border: 1px solid {q_border};
+            margin-bottom: 10px;
+        ">
+            {query_sql}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # --- Run Buttons (horizontal) ---
+    run_col1, run_col2, run_col3 = st.columns(3)
+
+    with run_col1:
+        if st.button("Original", use_container_width=True):
+            with st.spinner("Running..."):
+                t0 = time.perf_counter()
+                st.session_state["original_df"] = tr.run_query()
+                st.session_state["runtime_original"] = time.perf_counter() - t0
+                st.session_state["deleted_original"] = 0
+                _auto_generate_single_explanation("Original")
+
+    with run_col2:
+        if st.button("Heuristic", use_container_width=True):
+            heur_status = st.empty()
+
+            def heur_progress(iteration, smvi, removed):
+                heur_status.info(f"iter {iteration}, violations={smvi:.1f}, removed={removed}")
+
+            if st.session_state.get("original_df") is None:
+                heur_status.info("Computing original...")
                 t0 = time.perf_counter()
                 st.session_state["original_df"] = tr.run_query()
                 st.session_state["runtime_original"] = time.perf_counter() - t0
                 st.session_state["deleted_original"] = 0
 
-                # Auto-generate explanation for Original
-                _auto_generate_single_explanation("Original")
+            heur_status.info("Running heuristic...")
+            t0 = time.perf_counter()
+            heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=heur_progress)
+            heur_status.empty()
+            st.session_state["heur_df"] = heur_trend_result
+            st.session_state["runtime_heuristic"] = time.perf_counter() - t0
+            st.session_state["deleted_heuristic"] = int(heur_total_removed)
 
-        if st.button("Heuristic", use_container_width=True):
-            with st.spinner("Running heuristic repair…"):
+            if getattr(tr, "heur_deleted_per_group", None) is not None:
+                st.session_state["heur_deleted_per_group"] = {
+                    str(k): int(v) for k, v in tr.heur_deleted_per_group.to_dict().items()
+                }
+            if getattr(tr, "heur_left_per_group", None) is not None:
+                st.session_state["heur_left_per_group"] = {
+                    str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
+                }
+            st.session_state.get("llm_explanations", {}).pop("Heuristic", None)
+            _auto_generate_single_explanation("Heuristic")
+
+    with run_col3:
+        step_done = (max_steps <= 0) or (current_steps >= max_steps)
+        if st.button("Optimal", use_container_width=True, disabled=step_done):
+            if st.session_state.get("heur_df") is None:
+                opt_status = st.empty()
+
+                def opt_heur_progress(iteration, smvi, removed):
+                    opt_status.info(f"Heuristic: iter {iteration}, violations={smvi:.1f}")
+
                 if st.session_state.get("original_df") is None:
+                    opt_status.info("Computing original...")
                     t0 = time.perf_counter()
                     st.session_state["original_df"] = tr.run_query()
                     st.session_state["runtime_original"] = time.perf_counter() - t0
                     st.session_state["deleted_original"] = 0
 
+                opt_status.info("Running heuristic (required)...")
                 t0 = time.perf_counter()
-                heur_trend_result, _, heur_total_removed = tr.run_heuristic()
+                heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=opt_heur_progress)
+                opt_status.empty()
                 st.session_state["heur_df"] = heur_trend_result
                 st.session_state["runtime_heuristic"] = time.perf_counter() - t0
                 st.session_state["deleted_heuristic"] = int(heur_total_removed)
+                _auto_generate_single_explanation("Heuristic")
 
-
-                # Per-group tuple stats (for chart hover tooltips)
                 if getattr(tr, "heur_deleted_per_group", None) is not None:
                     st.session_state["heur_deleted_per_group"] = {
                         str(k): int(v) for k, v in tr.heur_deleted_per_group.to_dict().items()
@@ -1453,269 +1553,190 @@ with controls_col:
                         str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
                     }
 
-                # If you might have generated a “stale” explanation earlier, clear it:
-                st.session_state.get("llm_explanations", {}).pop("Heuristic", None)
-
-                # Auto-generate explanation for Heuristic (now payload has real stats)
-                _auto_generate_single_explanation("Heuristic")
-
-
-
-        step_done = (max_steps <= 0) or (current_steps >= max_steps)
-        if st.button("Optimal", use_container_width=True, disabled=step_done):
-            # ensure heuristic exists (optimal depends on it)
-            if st.session_state.get("heur_df") is None:
-                with st.spinner("Running heuristic repair (required for optimal)…"):
-                    if st.session_state.get("original_df") is None:
-                        t0 = time.perf_counter()
-                        st.session_state["original_df"] = tr.run_query()
-                        st.session_state["runtime_original"] = time.perf_counter() - t0
-                        st.session_state["deleted_original"] = 0
-
-                    t0 = time.perf_counter()
-                    heur_trend_result, _, heur_total_removed = tr.run_heuristic()
-                    st.session_state["heur_df"] = heur_trend_result
-                    st.session_state["runtime_heuristic"] = time.perf_counter() - t0
-                    st.session_state["deleted_heuristic"] = int(heur_total_removed)
-
-
-                    # Auto-generate explanation for Heuristic
-                    _auto_generate_single_explanation("Heuristic")
-
-                    # Per-group tuple stats (for chart hover tooltips)
-                    if getattr(tr, "heur_deleted_per_group", None) is not None:
-                        st.session_state["heur_deleted_per_group"] = {
-                            str(k): int(v) for k, v in tr.heur_deleted_per_group.to_dict().items()
-                        }
-                    if getattr(tr, "heur_left_per_group", None) is not None:
-                        st.session_state["heur_left_per_group"] = {
-                            str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
-                        }
-
-
             st.session_state["run_optimal_seq"] = True
 
+    # Auto-generate LLM explanations for Optimal steps (batch) AFTER the smooth auto-run finishes.
+    if (
+        st.session_state.get("pending_optimal_llm_batch")
+        and not st.session_state.get("auto_in_progress", False)
+        and int(st.session_state.get("max_steps", 0) or 0) > 0
+        and len(st.session_state.get("partial_steps", [])) >= int(st.session_state.get("max_steps", 0) or 0)
+    ):
+        with st.spinner("Generating explanations for Optimal steps…"):
+            _auto_generate_optimal_batch_explanations()
+        st.session_state["pending_optimal_llm_batch"] = False
 
-with output_col:
-    if not has_data:
-        # welcome notes
-        st.markdown("### Welcome 👋")
-        st.markdown(
-            """
-This demo lets you **select an example dataset or upload your own**, then choose:
-- a **group-by attribute**
-- an **aggregation attribute**
-- an **aggregation function**
-- expected **trend direction**
+    st.markdown("### Results")
+    chart_slot = st.empty()
+    status_slot = st.empty()
 
-Then compare:
-- The trend based on the **Original data**
-- **Heuristic** repair that maintains the trend
-- **Optimal (DP)** repair shown step-by-step
+    if st.session_state.get("pending_step_checkbox_reset", False):
+        latest = st.session_state.get("latest_step_for_reset")
+        if latest is not None:
+            for i in range(1, len(st.session_state.get("partial_steps", [])) + 1):
+                st.session_state[f"cb_show_step_{i}"] = (i == int(latest))
+        st.session_state["pending_step_checkbox_reset"] = False
+        st.session_state["latest_step_for_reset"] = None
 
-Use the controls on the left to get started.
-            """
-        )
-        st.stop()
-    else:
-        # Centered query
-        # query_sql = f"SELECT {agg_func.upper()}({agg_attr}) AS value GROUP BY {group_attr}"
-        query_sql = f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}"
+    # Initial chart
+    _render_chart(chart_slot, group_attr, agg_attr, agg_func)
 
-        q_fg = "#111111" if USE_LIGHT_BG else "#ffffff"
-        q_bg = "rgba(0,0,0,0.04)" if USE_LIGHT_BG else "rgba(255,255,255,0.06)"
-        q_border = "rgba(0,0,0,0.12)" if USE_LIGHT_BG else "rgba(255,255,255,0.10)"
+    # Display table
+    st.markdown("#### Display")
+    _render_table_header()
 
-        st.markdown(
-            f"""
-            <div style="
-                text-align:center;
-                font-size:28px;
-                font-weight:700;
-                color:{q_fg};
-                padding:14px 16px;
-                border-radius:12px;
-                background: {q_bg};
-                border: 1px solid {q_border};
-                margin-bottom: 14px;
-            ">
-                {query_sql}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    _render_row(
+        "Original",
+        "cb_show_original",
+        st.session_state.get("runtime_original"),
+        st.session_state.get("deleted_original", 0),
+    )
+    _render_row(
+        "Heuristic",
+        "cb_show_heuristic",
+        st.session_state.get("runtime_heuristic"),
+        st.session_state.get("deleted_heuristic"),
+    )
 
-        st.markdown("### Results")
-        chart_slot = st.empty()
-        status_slot = st.empty()
+    max_steps = int(st.session_state.get("max_steps", 0))
 
-        if st.session_state.get("pending_step_checkbox_reset", False):
-            latest = st.session_state.get("latest_step_for_reset")
-            if latest is not None:
-                for i in range(1, len(st.session_state.get("partial_steps", [])) + 1):
-                    st.session_state[f"cb_show_step_{i}"] = (i == int(latest))
-            st.session_state["pending_step_checkbox_reset"] = False
-            st.session_state["latest_step_for_reset"] = None
+    # Main table shows ONLY the latest computed step (intermediate OR final optimal).
+    latest_row_slot = st.empty()
+    with st.expander("Show additional steps", expanded=False):
+        additional_steps_slot = st.empty()
 
-        # Initial chart
-        _render_chart(chart_slot, group_attr, agg_attr, agg_func)
+    partial_steps = st.session_state.get("partial_steps", [])
+    runtimes_steps = st.session_state.get("runtime_steps", [])
+    deleted_steps = st.session_state.get("deleted_steps", [])
 
-        # Display table
-        st.markdown("#### Display")
-        _render_table_header()
+    current_steps = len(partial_steps)
 
-        _render_row(
-            "Original",
-            "cb_show_original",
-            st.session_state.get("runtime_original"),
-            st.session_state.get("deleted_original", 0),
-        )
-        _render_row(
-            "Heuristic",
-            "cb_show_heuristic",
-            st.session_state.get("runtime_heuristic"),
-            st.session_state.get("deleted_heuristic"),
-        )
+    latest_step_num = None
+    latest_label = None
+    if max_steps > 0 and current_steps >= max_steps:
+        latest_step_num = max_steps
+        latest_label = "Optimal"
+    elif current_steps > 0:
+        latest_step_num = current_steps
+        latest_label = f"Intermediate repair (step {latest_step_num})"
 
+    # Latest step row (replaces previous step each time)
+    latest_row_slot.empty()
+    if latest_step_num is not None:
+        i = int(latest_step_num)
+        key = f"cb_show_step_{i}"
+        if key not in st.session_state:
+            st.session_state[key] = True
+        rt = runtimes_steps[i - 1] if i - 1 < len(runtimes_steps) else None
+        td = deleted_steps[i - 1] if i - 1 < len(deleted_steps) else None
+        rt_total = sum(runtimes_steps[:i]) if i <= len(runtimes_steps) else None
+        with latest_row_slot.container():
+            _render_row(latest_label, key, rt, td, runtime_total_s=rt_total)
+
+    # Older steps - under the expander
+    additional_steps_slot.empty()
+    with additional_steps_slot.container():
+        if latest_step_num is not None:
+            for i in range(1, int(latest_step_num)):
+                key = f"cb_show_step_{i}"
+                if key not in st.session_state:
+                    st.session_state[key] = False
+                rt = runtimes_steps[i - 1] if i - 1 < len(runtimes_steps) else None
+                td = deleted_steps[i - 1] if i - 1 < len(deleted_steps) else None
+                rt_total = sum(runtimes_steps[:i]) if i <= len(runtimes_steps) else None
+                _render_row(
+                    f"Intermediate repair (step {i})",
+                    key,
+                    rt,
+                    td,
+                    runtime_total_s=rt_total,
+                )
+
+    _maybe_show_explanation_dialog()
+
+    # smooth Optimal: compute -> show -> sleep -> next (no reruns during the sequence)
+    if bool(st.session_state.get("run_optimal_seq", False)):
+        tr = st.session_state["tr_obj"]
         max_steps = int(st.session_state.get("max_steps", 0))
 
-        # Main table shows ONLY the latest computed step (intermediate OR final optimal).
-        latest_row_slot = st.empty()
-        with st.expander("Show additional steps", expanded=False):
-            additional_steps_slot = st.empty()
+        steps_to_run = max_steps - len(st.session_state.get("partial_steps", []))
+        if steps_to_run <= 0:
+            st.session_state["run_optimal_seq"] = False
+        else:
+            st.session_state["auto_in_progress"] = True
+            last_step_num = None
 
-        partial_steps = st.session_state.get("partial_steps", [])
-        runtimes_steps = st.session_state.get("runtime_steps", [])
-        deleted_steps = st.session_state.get("deleted_steps", [])
+            for k in range(steps_to_run):
+                step_num = len(st.session_state["partial_steps"]) + 1
+                last_step_num = step_num
 
-        current_steps = len(partial_steps)
+                status_slot.info(f"Computing Optimal step {step_num}…")
 
-        latest_step_num = None
-        latest_label = None
-        if max_steps > 0 and current_steps >= max_steps:
-            latest_step_num = max_steps
-            latest_label = "Optimal"
-        elif current_steps > 0:
-            latest_step_num = current_steps
-            latest_label = f"Intermediate repair (step {latest_step_num})"
+                t0 = time.perf_counter()
+                intermediate_result = tr.compute_next_partial_solution()
+                dt = time.perf_counter() - t0
 
-        # Latest step row (replaces previous step each time)
-        latest_row_slot.empty()
-        if latest_step_num is not None:
-            i = int(latest_step_num)
-            key = f"cb_show_step_{i}"
-            if key not in st.session_state:
-                st.session_state[key] = True
-            rt = runtimes_steps[i - 1] if i - 1 < len(runtimes_steps) else None
-            td = deleted_steps[i - 1] if i - 1 < len(deleted_steps) else None
-            rt_total = sum(runtimes_steps[:i]) if i <= len(runtimes_steps) else None
-            with latest_row_slot.container():
-                _render_row(latest_label, key, rt, td, runtime_total_s=rt_total)
+                st.session_state["partial_steps"].append(intermediate_result)
+                st.session_state["runtime_steps"].append(dt)
+                st.session_state["deleted_steps"].append(_compute_deleted_for_current_step(tr))
 
-        # Older steps - under the expander
-        additional_steps_slot.empty()
-        with additional_steps_slot.container():
-            if latest_step_num is not None:
-                for i in range(1, int(latest_step_num)):
-                    key = f"cb_show_step_{i}"
-                    if key not in st.session_state:
-                        st.session_state[key] = False
-                    rt = runtimes_steps[i - 1] if i - 1 < len(runtimes_steps) else None
-                    td = deleted_steps[i - 1] if i - 1 < len(deleted_steps) else None
-                    rt_total = sum(runtimes_steps[:i]) if i <= len(runtimes_steps) else None
+                # Per-group tuple stats for this step (for chart hover tooltips)
+                if getattr(tr, "last_step_deleted_per_group", None) is not None:
+                    st.session_state["step_deleted_per_group"].append(
+                        {str(kk): int(vv) for kk, vv in tr.last_step_deleted_per_group.to_dict().items()}
+                    )
+                else:
+                    st.session_state["step_deleted_per_group"].append({})
+                if getattr(tr, "last_step_left_per_group", None) is not None:
+                    st.session_state["step_left_per_group"].append(
+                        {str(kk): int(vv) for kk, vv in tr.last_step_left_per_group.to_dict().items()}
+                    )
+                else:
+                    st.session_state["step_left_per_group"].append({})
+
+                # Tell chart to show only this newest step (smooth), without touching checkbox keys
+                st.session_state["auto_visible_step"] = step_num
+
+                # Update chart immediately
+                _render_chart(chart_slot, group_attr, agg_attr, agg_func)
+
+                # Update the display table immediately:
+                # - main table shows ONLY the newest step
+                # - older steps move into the expander
+                row_label = "Optimal" if (max_steps > 0 and step_num >= max_steps) else f"Intermediate repair (step {step_num})"
+
+                # Latest step row
+                latest_row_slot.empty()
+                with latest_row_slot.container():
                     _render_row(
-                        f"Intermediate repair (step {i})",
-                        key,
-                        rt,
-                        td,
-                        runtime_total_s=rt_total,
+                        row_label,
+                        key=f"cb_show_step_{step_num}",
+                        runtime_s=dt,
+                        deleted_n=st.session_state["deleted_steps"][-1],
+                        runtime_total_s=sum(st.session_state["runtime_steps"]),
                     )
 
-        _maybe_show_explanation_dialog()
+                # Additional steps stay hidden during the smooth run (avoid duplicate checkbox keys).
+                additional_steps_slot.empty()
 
-        # smooth Optimal: compute -> show -> sleep -> next (no reruns during the sequence) 
-        if bool(st.session_state.get("run_optimal_seq", False)):
-            tr = st.session_state["tr_obj"]
-            max_steps = int(st.session_state.get("max_steps", 0))
+                # Sleep
+                if IS_SLEEP:
+                    if k < steps_to_run - 1:
+                        status_slot.info(f"Step {step_num} ready. Next step in 3 seconds…")
+                        time.sleep(3)
 
-            steps_to_run = max_steps - len(st.session_state.get("partial_steps", []))
-            if steps_to_run <= 0:
-                st.session_state["run_optimal_seq"] = False
-            else:
-                st.session_state["auto_in_progress"] = True
-                last_step_num = None
+            # End auto mode
+            st.session_state["auto_in_progress"] = False
+            st.session_state["auto_visible_step"] = None
+            st.session_state["run_optimal_seq"] = False
+            status_slot.empty()
 
-                for k in range(steps_to_run):
-                    step_num = len(st.session_state["partial_steps"]) + 1
-                    last_step_num = step_num
+            _recolor_intermediate_steps_by_deleted()
 
-                    status_slot.info(f"Computing Optimal step {step_num}…")
-
-                    t0 = time.perf_counter()
-                    intermediate_result = tr.compute_next_partial_solution()
-                    dt = time.perf_counter() - t0
-
-                    st.session_state["partial_steps"].append(intermediate_result)
-                    st.session_state["runtime_steps"].append(dt)
-                    st.session_state["deleted_steps"].append(_compute_deleted_for_current_step(tr))
-
-                    # Per-group tuple stats for this step (for chart hover tooltips)
-                    if getattr(tr, "last_step_deleted_per_group", None) is not None:
-                        st.session_state["step_deleted_per_group"].append(
-                            {str(k): int(v) for k, v in tr.last_step_deleted_per_group.to_dict().items()}
-                        )
-                    else:
-                        st.session_state["step_deleted_per_group"].append({})
-                    if getattr(tr, "last_step_left_per_group", None) is not None:
-                        st.session_state["step_left_per_group"].append(
-                            {str(k): int(v) for k, v in tr.last_step_left_per_group.to_dict().items()}
-                        )
-                    else:
-                        st.session_state["step_left_per_group"].append({})
-
-                    # Tell chart to show only this newest step (smooth), without touching checkbox keys
-                    st.session_state["auto_visible_step"] = step_num
-
-                    # Update chart immediately
-                    _render_chart(chart_slot, group_attr, agg_attr, agg_func)
-
-                    # Update the display table immediately:
-                    # - main table shows ONLY the newest step
-                    # - older steps move into the expander
-                    row_label = "Optimal" if (max_steps > 0 and step_num >= max_steps) else f"Intermediate repair (step {step_num})"
-
-                    # Latest step row
-                    latest_row_slot.empty()
-                    with latest_row_slot.container():
-                        _render_row(
-                            row_label,
-                            key=f"cb_show_step_{step_num}",
-                            runtime_s=dt,
-                            deleted_n=st.session_state["deleted_steps"][-1],
-                            runtime_total_s=sum(st.session_state["runtime_steps"]),
-                        )
-
-                    # Additional steps stay hidden during the smooth run (avoid duplicate checkbox keys).
-                    additional_steps_slot.empty()
-
-                    # Sleep 
-                    if IS_SLEEP:
-                        if k < steps_to_run - 1:
-                            status_slot.info(f"Step {step_num} ready. Next step in 3 seconds…")
-                            time.sleep(3)
-
-                # End auto mode
-                st.session_state["auto_in_progress"] = False
-                st.session_state["auto_visible_step"] = None
-                st.session_state["run_optimal_seq"] = False
-                status_slot.empty()
-
-                _recolor_intermediate_steps_by_deleted()
-
-                # One rerun AFTER the whole smooth sequence:
-                # makes checkbox states become "only newest checked" without flicker per step
-                if last_step_num is not None:
-                    st.session_state["pending_optimal_llm_batch"] = True
-                    st.session_state["pending_step_checkbox_reset"] = True
-                    st.session_state["latest_step_for_reset"] = int(last_step_num)
-                    st.rerun()
+            # One rerun AFTER the whole smooth sequence:
+            # makes checkbox states become "only newest checked" without flicker per step
+            if last_step_num is not None:
+                st.session_state["pending_optimal_llm_batch"] = True
+                st.session_state["pending_step_checkbox_reset"] = True
+                st.session_state["latest_step_for_reset"] = int(last_step_num)
+                st.rerun()

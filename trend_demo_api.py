@@ -54,10 +54,11 @@ class TrendRepair(object):
             pandas_function_map[self.agg_func]).reset_index()  # .to_dict()
         return trend_result
 
-    def run_heuristic(self):
+    def run_heuristic(self, progress_callback=None):
         output_csv = os.path.join("demo_results", "heur_results.csv")
         result_df, removed_df = greedy_algorithm(self.df, pandas_function_map[self.agg_func], grouping_column=self.grouping_col,
-                                                 aggregation_column=self.aggregation_col, output_csv=output_csv)
+                                                 aggregation_column=self.aggregation_col, output_csv=output_csv,
+                                                 progress_callback=progress_callback)
         trend_result = result_df.groupby(self.grouping_col)[self.aggregation_col].agg(pandas_function_map[self.agg_func]).reset_index() #.to_dict()
         removed_per_group = removed_df.groupby(self.grouping_col)[self.aggregation_col].agg("count")
         self.removed_by_heur = removed_df

@@ -351,7 +351,7 @@ def log_iteration(iteration_logs, iteration, Smvi, max_impact_group, max_impact_
         "Fallback Used": fallback_used
     })
 
-def greedy_algorithm(df, agg_func, grouping_column, aggregation_column, output_csv):
+def greedy_algorithm(df, agg_func, grouping_column, aggregation_column, output_csv, progress_callback=None):
     """Greedy algorithm to minimize Smvi by removing tuples."""
     output_dir = os.path.dirname(output_csv)
     if output_dir and not os.path.exists(output_dir):
@@ -412,6 +412,9 @@ def greedy_algorithm(df, agg_func, grouping_column, aggregation_column, output_c
                                   "violating groups": len(violating_groups), "impact":max_impact_data["impact"],
                                   "group": max_impact_group, "index": max_impact_data["tuple_index"]})
         progress_bar.update(1)
+
+        if progress_callback:
+            progress_callback(iteration=iteration, smvi=Smvi, removed=tuple_removals)
 
     progress_bar.close()
     end_time = time.time()
