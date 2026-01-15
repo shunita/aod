@@ -1,7 +1,8 @@
-pandas
-streamlit
-sortedcontainers
-tqdm
 altair>=5
 openai>=1.0.0
+pandas
 python-dotenv>=1.0.0
+scipy
+sortedcontainers
+streamlit
+tqdm
