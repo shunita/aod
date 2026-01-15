@@ -1,4 +1,5 @@
 import time
+import logging
 import streamlit as st
 import pandas as pd
 import altair as alt
@@ -6,8 +7,12 @@ import json
 import re
 
 from trend_demo_api import TrendRepair
+
+# Configure logging for silent exceptions
+logging.basicConfig(level=logging.WARNING)
+_logger = logging.getLogger(__name__)
 try:
-    from llm_explainer import explain_step, explain_steps_batch
+    from llm_explainer import explain_step, explain_steps_batch, DEFAULT_MODEL
 except Exception:
     explain_step = None
     explain_steps_batch = None
@@ -42,6 +47,7 @@ st.markdown(
 if st.session_state.get("_explanation_type") != EXPLANATION_TYPE:
     st.session_state["_explanation_type"] = EXPLANATION_TYPE
     st.session_state["llm_explanations"] = {}
+    st.session_state["distribution_summaries"] = {}
     st.session_state["pending_optimal_llm_batch"] = False
 
 # global styling
@@ -380,7 +386,8 @@ def _compute_deleted_for_current_step(tr: TrendRepair):
 
         all_removed_index = removed_tuples_up_to_i.index.append(removed_tuples_from_i_plus_1.index)
         return int(len(all_removed_index))
-    except Exception:
+    except Exception as e:
+        _logger.warning("_compute_deleted_for_current_step failed: %s", e)
         return None
 
 
@@ -447,7 +454,9 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
         frames.append(_to_long(original_df, group_attr, agg_attr, "Original"))
 
     if show_heuristic and heur_df is not None:
-        frames.append(_to_long(heur_df, group_attr, agg_attr, "Heuristic"))
+        heur_deleted = st.session_state.get("deleted_heuristic", None)
+        legend_label = f"Heuristic - {_fmt_int(heur_deleted)} tuples deleted"
+        frames.append(_to_long(heur_df, group_attr, agg_attr, "Heuristic", legend_label))
 
     # Determine which steps to show
     auto_in_progress = bool(st.session_state.get("auto_in_progress", False))
@@ -462,7 +471,7 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
 
         if show_step and step_df is not None:
             max_steps = int(st.session_state.get("max_steps", 0))
-            step_label = "Optimal" if (max_steps > 0 and i == max_steps) else f"Intermediate repair (step {i})"
+            step_label = "Optimal" if (0 < max_steps == i) else f"Intermediate repair (step {i})"
             deleted_n = deleted_steps[i - 1] if (i - 1) < len(deleted_steps) else None
             legend_label = f"{step_label} - {_fmt_int(deleted_n)} tuples deleted"
             frames.append(_to_long(step_df, group_attr, agg_attr, step_label, legend_label))
@@ -494,7 +503,8 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
         if s.startswith("Intermediate repair (step "):
             try:
                 step_cutoff[s] = int(s.split("step ")[1].split(")")[0])
-            except Exception:
+            except Exception as e:
+                _logger.warning("Failed to parse step number from '%s': %s", s, e)
                 step_cutoff[s] = None
         elif s == "Optimal":
             step_cutoff[s] = None
@@ -665,7 +675,8 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
             try:
                 v1f = float(v1)
                 v2f = float(v2)
-            except Exception:
+            except Exception as e:
+                _logger.warning("Failed to convert values to float: v1=%s, v2=%s: %s", v1, v2, e)
                 continue
 
             if v1f > v2f:
@@ -753,15 +764,62 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
     )
 
 
-    chart_slot.altair_chart(chart, use_container_width=True)
+    chart_slot.altair_chart(chart, width='stretch')
 
 
 def _render_table_header():
-    hcols = st.columns([3, 1.2, 1.2, 2])
+    hcols = st.columns([1, 1.2, 1.2, 2])
     hcols[0].markdown("**Display**")
     hcols[1].markdown("**Runtime**")
     hcols[2].markdown("**Tuples deleted**")
-    hcols[3].markdown("**Explanation**")
+    # hcols[3].markdown("**Explanation**")
+
+
+def is_heuristic_label(label: str) -> bool:
+    return "Heuristic" in label
+
+
+def _get_distribution_summary(label: str):
+    """Get or compute distribution summary for a repair label."""
+    cache_key = "distribution_summaries"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = {}
+
+    cache = st.session_state[cache_key]
+    if label in cache:
+        return cache[label]
+
+    tr = st.session_state.get("tr_obj")
+    if tr is None:
+        return None
+
+    try:
+        if is_heuristic_label(label):
+            summary = tr.summarize_distribution_differences("heuristic")
+        elif label == "Optimal" or label.startswith("Intermediate repair (step "):
+            # Extract step number
+            if label == "Optimal":
+                step_num = int(st.session_state.get("max_steps", 0))
+            else:
+                step_num = int(label.split("step ")[1].split(")")[0])
+            summary = tr.summarize_distribution_differences(step_num)
+        else:
+            return None
+
+        if summary:
+            cache[label] = "\n".join(summary)
+            return cache[label]
+    except Exception as e:
+        _logger.warning("_get_distribution_summary failed for '%s': %s", label, e)
+    return None
+
+
+def _render_distribution_expander(label: str):
+    """Render an expandable panel showing distribution differences for a repair."""
+    summary = _get_distribution_summary(label)
+    if summary:
+        with st.expander("Explanation: Distribution differences (removed vs. remaining)", expanded=False):
+            st.markdown(summary)
 
 
 def _render_row(label: str, key: str, runtime_s, deleted_n, runtime_total_s=None):
@@ -772,32 +830,9 @@ def _render_row(label: str, key: str, runtime_s, deleted_n, runtime_total_s=None
     r[1].write(rt_disp)
     r[2].write(_fmt_int(deleted_n))
 
-    # explanation
-    with r[3]:
-        if hasattr(st, "popover"):
-            with st.popover("Explain", type="secondary", width="stretch"):
-                # markdown-only (no widgets) so there is no rerun
-                st.markdown(f"### {label}")
-                llm_txt = (st.session_state.get("llm_explanations") or {}).get(label)
-                if llm_txt:
-                    st.markdown(llm_txt)
-                    st.markdown("")
-                st.markdown(f"**Runtime:** {rt_disp}")
-                st.markdown(f"**Tuples deleted:** {_fmt_int(deleted_n)}")
-
-                # temporary content
-                params_key = st.session_state.get("params_key")
-                if isinstance(params_key, tuple) and len(params_key) == 4:
-                    _, group_attr, agg_attr, agg_func = params_key
-                    # st.markdown(
-                    #     f"**Query:** `SELECT {str(agg_func).upper()}({agg_attr}) GROUP BY {group_attr}`"
-                    # )
-                    st.markdown(
-                        f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}"
-                    )
-        else:
-            # fallback if popover not available in this Streamlit version
-            r[3].write("—")
+    # Distribution differences expander (only for Heuristic and Optimal/Intermediate steps)
+    if label != "Original" and deleted_n is not None and deleted_n > 0:
+        _render_distribution_expander(label)
 
 # temporary
 def _build_explanation_md(payload: dict) -> str:
@@ -839,7 +874,7 @@ def _build_explanation_md(payload: dict) -> str:
         lines.append(
             "Adjacent decreases in the *Original* series are highlighted with red arrows/lines to make trend violations easy to spot."
         )
-    elif label == "Heuristic":
+    elif is_heuristic_label(label):
         lines.append(
             "This is the greedy heuristic repair: it deletes tuples to reduce / eliminate trend violations quickly, without guaranteeing global optimality."
         )
@@ -848,7 +883,8 @@ def _build_explanation_md(payload: dict) -> str:
         # Optimal (DP) partial / final steps
         try:
             step_num = int(key.split("_")[-1])
-        except Exception:
+        except Exception as e:
+            _logger.warning("Failed to parse step number from key '%s': %s", key, e)
             step_num = None
 
         if step_num is not None and tr is not None:
@@ -873,8 +909,8 @@ def _build_explanation_md(payload: dict) -> str:
                     lines.append(f"**Step boundary:** next group = `{next_group_key}`")
                     if cutoff is not None:
                         lines.append(f"**Heuristic cutoff (next group's aggregate):** `{cutoff}`")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _logger.warning("Failed to compute step boundary details: %s", e)
 
             lines.append("")
             lines.append("**How to read `Tuples deleted` for steps:**")
@@ -902,7 +938,8 @@ def _parse_step_num_from_label(label: str):
     if m:
         try:
             return int(m.group(1))
-        except Exception:
+        except Exception as e:
+            _logger.warning("Failed to parse step number from label '%s': %s", label, e)
             return None
     return None
 
@@ -922,7 +959,8 @@ def _build_llm_payload(label: str, runtime_s=None):
     try:
         if tr is not None and getattr(tr, "group_keys", None) is not None:
             group_order = [str(x) for x in tr.group_keys]
-    except Exception:
+    except Exception as e:
+        _logger.warning("Failed to get group_order: %s", e)
         group_order = []
 
     original_counts = st.session_state.get("tuple_counts_per_group") or {}
@@ -935,7 +973,7 @@ def _build_llm_payload(label: str, runtime_s=None):
     if label == "Original":
         deleted_map = {str(k): 0 for k in original_counts.keys()}
         left_map = {str(k): int(v) for k, v in original_counts.items()}
-    elif label == "Heuristic":
+    elif is_heuristic_label(label):
         deleted_map = st.session_state.get("heur_deleted_per_group") or {}
         left_map = st.session_state.get("heur_left_per_group") or {}
         attributes_with_high_diff = tr.summarize_distribution_differences("heuristic")
@@ -1061,7 +1099,7 @@ def _baseline_explanation_from_payload(payload: dict) -> str:
     # Series-specific note
     if label == "Original":
         lines.append("Baseline aggregate from the uploaded data (no deletions).")
-    elif label == "Heuristic":
+    elif is_heuristic_label(label):
         lines.append("Greedy heuristic repair: deletes tuples to reduce/eliminate trend violations (not globally optimal).")
     elif isinstance(label, str) and (label == "Optimal" or label.startswith("Intermediate repair (step ")):
         lines.append("Optimal (DP) repair shown step-by-step (intermediate steps may combine DP prefix + heuristic suffix).")
@@ -1079,7 +1117,8 @@ def _format_stats_explanation(payload: dict) -> str:
     base = _baseline_explanation_from_payload(payload)
     try:
         payload_json = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
-    except Exception:
+    except Exception as e:
+        _logger.warning("Failed to serialize payload to JSON: %s", e)
         payload_json = None
 
     if payload_json:
@@ -1100,7 +1139,7 @@ def _hardcoded_explanation_for_label(label: str) -> str | None:
         # Fallback if user only defines constants
         if label == "Original" and hasattr(hc, "ORIGINAL"):
             return getattr(hc, "ORIGINAL")
-        if label == "Heuristic" and hasattr(hc, "HEURISTIC"):
+        if is_heuristic_label(label) and hasattr(hc, "HEURISTIC"):
             return getattr(hc, "HEURISTIC")
         if label == "Optimal" and hasattr(hc, "OPTIMAL"):
             return getattr(hc, "OPTIMAL")
@@ -1109,7 +1148,8 @@ def _hardcoded_explanation_for_label(label: str) -> str | None:
             if 1 <= step_num <= len(steps):
                 return steps[step_num - 1]
         return None
-    except Exception:
+    except Exception as e:
+        _logger.warning("_hardcoded_explanation_for_label failed for '%s': %s", label, e)
         return None
 
 
@@ -1141,8 +1181,9 @@ def _auto_generate_single_explanation(label: str):
             text = _baseline_explanation_from_payload(payload)
         else:
             try:
-                text = explain_step(payload, model=st.session_state.get("llm_model", "gpt-5-mini"))
-            except Exception:
+                text = explain_step(payload, model=st.session_state.get("llm_model", DEFAULT_MODEL))
+            except Exception as e:
+                _logger.warning("LLM explain_step failed for '%s': %s", label, e)
                 text = _baseline_explanation_from_payload(payload)
 
     if text:
@@ -1187,8 +1228,8 @@ def _auto_generate_optimal_batch_explanations():
                 rts = st.session_state.get("runtime_steps") or []
                 if 1 <= step_num <= len(rts):
                     runtime_s = rts[step_num - 1]
-        except Exception:
-            pass
+        except Exception as e:
+            _logger.warning("Failed to get runtime for step %s: %s", step_num, e)
 
         payload = _build_llm_payload(lab, runtime_s=runtime_s)
 
@@ -1210,12 +1251,13 @@ def _auto_generate_optimal_batch_explanations():
         return
 
     try:
-        out = explain_steps_batch(payloads, model=st.session_state.get("llm_model", "gpt-5-mini"))
+        out = explain_steps_batch(payloads, model=st.session_state.get("llm_model", DEFAULT_MODEL))
         if isinstance(out, dict):
             for lab, txt in out.items():
                 if txt and (not st.session_state["llm_explanations"].get(lab)):
                     st.session_state["llm_explanations"][lab] = txt
-    except Exception:
+    except Exception as e:
+        _logger.warning("LLM explain_steps_batch failed: %s", e)
         # Fallback: deterministic explanations
         for p in payloads:
             lab = p.get("series_label")
@@ -1349,6 +1391,18 @@ if not has_data:
 controls_col, output_col = st.columns([1, 3], gap="large")
 
 with controls_col:
+    # "Change dataset" button
+    st.divider()
+    if st.button("Change dataset", width='stretch'):
+        # Clear loaded dataset from session state
+        st.session_state.pop("loaded_dataset_name", None)
+        st.session_state.pop("loaded_dataset_df", None)
+        st.session_state.pop("loaded_dataset_key", None)
+        st.session_state.pop("params_key", None)
+        st.session_state.pop("tr_obj", None)
+        st.session_state.pop("distribution_summaries", None)
+        st.rerun()
+
     st.subheader("Query")
 
     # Filter columns to exclude non-useful ones for grouping
@@ -1357,7 +1411,12 @@ with controls_col:
     numeric_columns = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
     group_attr = st.selectbox("Grouping attribute", available_columns, key="group_attr_select")
-    agg_attr = st.selectbox("Aggregation attribute", numeric_columns, key="agg_attr_select")
+    # Exclude the grouping column from aggregation options (same column causes pandas error)
+    agg_columns = [c for c in numeric_columns if c != group_attr]
+    if not agg_columns:
+        st.warning("No numeric columns available for aggregation (excluding the grouping column).")
+        st.stop()
+    agg_attr = st.selectbox("Aggregation attribute", agg_columns, key="agg_attr_select")
     agg_func = st.selectbox("Aggregation function", ["sum", "avg", "median", "max"], key="agg_func_select")
     trend_direction = st.radio(
         "Trend direction",
@@ -1428,19 +1487,9 @@ with controls_col:
 
         # LLM explanations (auto-generated)
         st.session_state["llm_explanations"] = {}
+        st.session_state["distribution_summaries"] = {}
         st.session_state["pending_optimal_llm_batch"] = False
-        st.session_state["llm_model"] = "gpt-5-mini"
-
-    # "Change dataset" button
-    st.divider()
-    if st.button("Change dataset", use_container_width=True):
-        # Clear loaded dataset from session state
-        st.session_state.pop("loaded_dataset_name", None)
-        st.session_state.pop("loaded_dataset_df", None)
-        st.session_state.pop("loaded_dataset_key", None)
-        st.session_state.pop("params_key", None)
-        st.session_state.pop("tr_obj", None)
-        st.rerun()
+        st.session_state["llm_model"] = DEFAULT_MODEL
 
 # Store references for Run buttons in output_col
 tr = st.session_state.get("tr_obj")
@@ -1478,7 +1527,7 @@ with output_col:
     run_col1, run_col2, run_col3 = st.columns(3)
 
     with run_col1:
-        if st.button("Original", use_container_width=True):
+        if st.button("Original", width='stretch'):
             with st.spinner("Running..."):
                 t0 = time.perf_counter()
                 st.session_state["original_df"] = tr.run_query()
@@ -1486,24 +1535,25 @@ with output_col:
                 st.session_state["deleted_original"] = 0
                 _auto_generate_single_explanation("Original")
 
-    with run_col2:
-        if st.button("Heuristic", use_container_width=True):
-            heur_status = st.empty()
+    # Unified progress slot (below buttons, above chart)
+    progress_slot = st.empty()
 
+    with run_col2:
+        if st.button("Heuristic", width='stretch'):
             def heur_progress(iteration, smvi, removed):
-                heur_status.info(f"iter {iteration}, violations={smvi:.1f}, removed={removed}")
+                progress_slot.info(f"Heuristic: iteration {iteration}, removed {removed} tuples")
 
             if st.session_state.get("original_df") is None:
-                heur_status.info("Computing original...")
+                progress_slot.info("Computing original...")
                 t0 = time.perf_counter()
                 st.session_state["original_df"] = tr.run_query()
                 st.session_state["runtime_original"] = time.perf_counter() - t0
                 st.session_state["deleted_original"] = 0
 
-            heur_status.info("Running heuristic...")
+            progress_slot.info("Running heuristic...")
             t0 = time.perf_counter()
             heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=heur_progress)
-            heur_status.empty()
+            progress_slot.empty()
             st.session_state["heur_df"] = heur_trend_result
             st.session_state["runtime_heuristic"] = time.perf_counter() - t0
             st.session_state["deleted_heuristic"] = int(heur_total_removed)
@@ -1521,24 +1571,22 @@ with output_col:
 
     with run_col3:
         step_done = (max_steps <= 0) or (current_steps >= max_steps)
-        if st.button("Optimal", use_container_width=True, disabled=step_done):
+        if st.button("Optimal", width='stretch', disabled=step_done):
             if st.session_state.get("heur_df") is None:
-                opt_status = st.empty()
-
                 def opt_heur_progress(iteration, smvi, removed):
-                    opt_status.info(f"Heuristic: iter {iteration}, violations={smvi:.1f}")
+                    progress_slot.info(f"Heuristic: iteration {iteration}, removed {removed} tuples")
 
                 if st.session_state.get("original_df") is None:
-                    opt_status.info("Computing original...")
+                    progress_slot.info("Computing original...")
                     t0 = time.perf_counter()
                     st.session_state["original_df"] = tr.run_query()
                     st.session_state["runtime_original"] = time.perf_counter() - t0
                     st.session_state["deleted_original"] = 0
 
-                opt_status.info("Running heuristic (required)...")
+                progress_slot.info("Running heuristic (required)...")
                 t0 = time.perf_counter()
                 heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=opt_heur_progress)
-                opt_status.empty()
+                progress_slot.empty()
                 st.session_state["heur_df"] = heur_trend_result
                 st.session_state["runtime_heuristic"] = time.perf_counter() - t0
                 st.session_state["deleted_heuristic"] = int(heur_total_removed)
@@ -1559,16 +1607,14 @@ with output_col:
     if (
         st.session_state.get("pending_optimal_llm_batch")
         and not st.session_state.get("auto_in_progress", False)
-        and int(st.session_state.get("max_steps", 0) or 0) > 0
-        and len(st.session_state.get("partial_steps", [])) >= int(st.session_state.get("max_steps", 0) or 0)
+        and 0 < int(st.session_state.get("max_steps", 0) or 0) <= len(st.session_state.get("partial_steps", []))
     ):
         with st.spinner("Generating explanations for Optimal steps…"):
             _auto_generate_optimal_batch_explanations()
         st.session_state["pending_optimal_llm_batch"] = False
 
-    st.markdown("### Results")
+    # st.markdown("### Results")
     chart_slot = st.empty()
-    status_slot = st.empty()
 
     if st.session_state.get("pending_step_checkbox_reset", False):
         latest = st.session_state.get("latest_step_for_reset")
@@ -1582,7 +1628,7 @@ with output_col:
     _render_chart(chart_slot, group_attr, agg_attr, agg_func)
 
     # Display table
-    st.markdown("#### Display")
+    # st.markdown("#### Display")
     _render_table_header()
 
     _render_row(
@@ -1670,7 +1716,7 @@ with output_col:
                 step_num = len(st.session_state["partial_steps"]) + 1
                 last_step_num = step_num
 
-                status_slot.info(f"Computing Optimal step {step_num}…")
+                progress_slot.info(f"Computing Optimal step {step_num}…")
 
                 t0 = time.perf_counter()
                 intermediate_result = tr.compute_next_partial_solution()
@@ -1722,14 +1768,14 @@ with output_col:
                 # Sleep
                 if IS_SLEEP:
                     if k < steps_to_run - 1:
-                        status_slot.info(f"Step {step_num} ready. Next step in 3 seconds…")
-                        time.sleep(3)
+                        progress_slot.info(f"Step {step_num} ready. Next step in 3 seconds…")
+                        time.sleep(0.5)
 
             # End auto mode
             st.session_state["auto_in_progress"] = False
             st.session_state["auto_visible_step"] = None
             st.session_state["run_optimal_seq"] = False
-            status_slot.empty()
+            progress_slot.empty()
 
             _recolor_intermediate_steps_by_deleted()
 

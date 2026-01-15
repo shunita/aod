@@ -1,6 +1,5 @@
 import os
 import pandas as pd
-import numpy as np
 from scipy.stats import entropy
 from DP.optimal_subset_with_constraint_unified import IncrementalDP
 from Heuristic.aggr_main import greedy_algorithm
@@ -137,7 +136,7 @@ class TrendRepair(object):
     def summarize_distribution_differences(self,
                                            repair_name,
             # removed_subset: pd.DataFrame,
-            k: int = 5,
+            k: int = 10,
             epsilon: float = 1e-8,
             ignore_columns=None
     ):
@@ -213,16 +212,20 @@ class TrendRepair(object):
         result_df = pd.DataFrame(results)
         result_df = result_df.sort_values("kl_divergence", ascending=False)
 
-        print(result_df)
+        # print(result_df)
 
         textual_summary = []
 
-        for row in results[:k]:
-            textual_summary.append(f"Attribute: {row['attribute']}")
+        # Use sorted results (by KL divergence)
+        sorted_results = result_df.head(k).to_dict('records')
+
+        for row in sorted_results:
+            textual_summary.append(f"**{row['attribute']}**")
+            textual_summary.append("")
             table = textify_distribution_table(row['subset_distribution'], row['rest_distribution'])
             textual_summary.extend(table)
+            textual_summary.append("")  # spacing between attributes
 
-        # return result_df.head(k)
         return textual_summary
 
 def textify_distribution_table(
@@ -231,8 +234,8 @@ def textify_distribution_table(
     name_a: str = "Removed",
     name_b: str = "Rest",
     # decimals: int = 3,
-    sort_by: str = "abs_diff",  # "abs_diff", "diff", "a", "b", "value"
-    min_freq: float = 0.001
+    sort_by: str = "diff",  # "abs_diff", "diff", "a", "b", "value"
+    min_freq: float = 0.01
 ):
     """
     Print a text table comparing two discrete distributions.
@@ -279,40 +282,13 @@ def textify_distribution_table(
     elif sort_by == "value":
         rows.sort(key=lambda r: r["value"])
 
-    # Column widths
-    # w_val = max(len("Value"), *(len(r["value"]) for r in rows))
-    # w_a = max(len(name_a), *(len(f"{r[name_a]:.{decimals}f}") for r in rows))
-    # w_b = max(len(name_b), *(len(f"{r[name_b]:.{decimals}f}") for r in rows))
-    # w_d = max(len("Δ"), *(len(f"{r['Δ']:+.{decimals}f}") for r in rows))
+    # Markdown table format
+    output = [
+        f"| Value | {name_a} | {name_b} |",
+         "|-------|----------|----------|"
+    ]
 
-    # Header
-    # header = (
-    #     f"{'Value':<{w_val}}  "
-    #     f"{name_a:>{w_a}}  "
-    #     f"{name_b:>{w_b}}  "
-    #     f"{'Δ':>{w_d}}"
-    # )
+    for r in rows[:3]:
+        output.append(f"| {r['value']} | {r[name_a]:.2f} | {r[name_b]:.2f} |")
 
-    header = f"Value +{name_a}+ {name_b}, diff"
-    sep = "-" * len(header)
-
-    output = [header, sep]
-    # print(header)
-    # print(sep)
-
-    # Rows
-    for r in rows:
-        # output.append(
-        #     f"{r['value']:<{w_val}}  "
-        #     f"{r[name_a]:>{w_a}.{decimals}f}  "
-        #     f"{r[name_b]:>{w_b}.{decimals}f}  "
-        #     f"{r['Δ']:>{w_d}+.{decimals}f}"
-        # )
-        output.append(
-            f"{r['value']}, {r[name_a]:.2f}, {r[name_b]:.2f}" #, {r['Δ']:.2f}"
-            # f"{r['value']:<{w_val}}  "
-            # f"{r[name_a]:>{w_a}.{decimals}f}  "
-            # f"{r[name_b]:>{w_b}.{decimals}f}  "
-            # f"{r['Δ']:>{w_d}+.{decimals}f}"
-        )
     return output

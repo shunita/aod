@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
+_logger = logging.getLogger(__name__)
 
 DEFAULT_ENV_PATH = "connection.env"
 DEFAULT_MODEL = "gpt-5-mini"
@@ -58,11 +61,12 @@ def _get_client(env_path: str = DEFAULT_ENV_PATH) -> OpenAI:
 def _system_prompt() -> str:
     # Keep it short and strict
     return (
-        "You write short UI explanations for a trend-repair demo.\n"
+        "You write short UI explanations for a trend-repair demo that removes tuples to fix monotonicity violations.\n\n"
         "Rules:\n"
         "- Use ONLY the provided statistics; do NOT invent facts.\n"
-        "- Keep all numbers and group names exactly.\n"
-        "- Be concise (max 60 words).\n"
+        "- If 'attributes_with_high_diff' is provided, briefly mention which attribute values are over/under-represented in removed tuples.\n"
+        "- Keep numbers and group names exactly as provided.\n"
+        "- Be concise (max 80 words).\n"
         "- Output plain text (no markdown, no bullets).\n"
     )
 
@@ -137,7 +141,8 @@ def explain_step(step_payload: Dict[str, Any], model: str = DEFAULT_MODEL, env_p
         out = text if text else baseline
         _SUCCESS_CACHE[cache_key] = out
         return out
-    except Exception:
+    except Exception as e:
+        _logger.warning("LLM explain_step failed: %s", e)
         return baseline
 
 
@@ -245,6 +250,7 @@ def explain_steps_batch(
             _SUCCESS_CACHE[(model, d)] = final[label]
 
         return final
-    except Exception:
+    except Exception as e:
+        _logger.warning("LLM explain_steps_batch failed: %s", e)
         # Hard fallback: deterministic baselines
         return baselines
