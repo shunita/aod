@@ -16,11 +16,22 @@ class TrendRepair(object):
         grouping_col: a column name from the dataframe to group by.
         aggregation_col: a column name from the dataframe to aggregate.
         """
-        self.df = df
+        self.df = df.copy()
         self.agg_func = agg_func
         self.grouping_col = grouping_col
         self.aggregation_col = aggregation_col
-        self.group_keys = sorted(self.df[self.grouping_col].unique())
+
+        # Handle mixed types in grouping column by converting to string
+        # Also drop NaN values from grouping column to avoid sorting issues
+        self.df = self.df.dropna(subset=[self.grouping_col])
+
+        # Try to sort, fallback to string conversion if mixed types
+        unique_vals = self.df[self.grouping_col].unique()
+        try:
+            self.group_keys = sorted(unique_vals)
+        except TypeError:
+            # Mixed types - convert to string for sorting
+            self.group_keys = sorted(unique_vals, key=str)
 
         # Per-group tuple counts in the original dataset (used for UI hover tooltips)
         self.original_tuples_per_group = self.df.groupby(self.grouping_col, dropna=False).size()

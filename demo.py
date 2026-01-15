@@ -1262,27 +1262,85 @@ controls_col, output_col = st.columns([1, 3], gap="large")
 with controls_col:
     st.header("Controls")
 
-    uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+    # Example datasets available in data/ folder
+    EXAMPLE_DATASETS = {
+        "Stack Overflow (Binned Salary)": "data/SO/so_clean_for_trend_outliers_binned_salary.csv",
+        "Stack Overflow (Salary by Education)": "data/SO/so_concise_for_edlevel_median_USA.csv",
+        "Diabetes (Binned Age)": "data/diabetes/diabetes_prediction_dataset_binned_age.csv",
+        "German Credit": "data/german_credit/german_textual.csv",
+    }
 
-    has_data = uploaded_file is not None
-    if not has_data:
-        st.info("Upload a CSV to begin.")
-    else:
-        df = pd.read_csv(uploaded_file)
-
-        group_attr = st.selectbox("Grouping attribute", df.columns)
-        agg_attr = st.selectbox("Aggregation attribute", df.columns)
-        agg_func = st.selectbox("Aggregation function", ["sum", "avg", "median", "max"])
-        trend_direction = st.radio(
-        "Trend direction",
-        ["non-decreasing", "non-increasing"],
+    data_source = st.radio(
+        "Data source",
+        ["Example dataset", "Upload CSV"],
         index=0,
         horizontal=True,
+        key="data_source_radio",
+    )
+
+    df = None
+    data_key = None
+
+    if data_source == "Example dataset":
+        example_options = ["-- Select a dataset --"] + list(EXAMPLE_DATASETS.keys())
+        selected_example = st.selectbox("Select dataset", example_options, key="example_dataset_select")
+        if selected_example != "-- Select a dataset --":
+            example_path = EXAMPLE_DATASETS[selected_example]
+            try:
+                # Try different encodings for CSV files
+                for encoding in ["utf-8", "latin-1", "cp1252"]:
+                    try:
+                        df = pd.read_csv(example_path, encoding=encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                if df is None:
+                    st.error("Failed to load dataset: encoding error")
+                else:
+                    # Drop unnamed index columns
+                    unnamed_cols = [c for c in df.columns if c.startswith("Unnamed")]
+                    if unnamed_cols:
+                        df = df.drop(columns=unnamed_cols)
+                    data_key = example_path
+                    st.success(f"Loaded: {selected_example}")
+            except Exception as e:
+                st.error(f"Failed to load example dataset: {e}")
+    else:
+        uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
+        if uploaded_file is not None:
+            try:
+                df = pd.read_csv(uploaded_file)
+                # Drop unnamed index columns
+                unnamed_cols = [c for c in df.columns if c.startswith("Unnamed")]
+                if unnamed_cols:
+                    df = df.drop(columns=unnamed_cols)
+                data_key = uploaded_file.name
+            except Exception as e:
+                st.error(f"Failed to load CSV: {e}")
+
+    has_data = df is not None
+    if not has_data:
+        st.info("Select an example dataset or upload a CSV to begin.")
+    else:
+        # Filter columns to exclude non-useful ones for grouping
+        available_columns = [c for c in df.columns if not c.startswith("Unnamed")]
+
+        group_attr = st.selectbox("Grouping attribute", available_columns, key="group_attr_select")
+        agg_attr = st.selectbox("Aggregation attribute", available_columns, key="agg_attr_select")
+        agg_func = st.selectbox("Aggregation function", ["sum", "avg", "median", "max"], key="agg_func_select")
+
+        st.markdown("")  # spacing
+        trend_direction = st.radio(
+            "Trend direction",
+            ["non-decreasing", "non-increasing"],
+            index=0,
+            horizontal=True,
+            key="trend_direction_radio",
         )
 
         st.session_state["trend_direction"] = trend_direction
 
-        params_key = (uploaded_file.name, group_attr, agg_attr, agg_func)
+        params_key = (data_key, group_attr, agg_attr, agg_func)
 
         if st.session_state.get("params_key") != params_key:
             st.session_state["params_key"] = params_key
@@ -1442,12 +1500,12 @@ with controls_col:
 
 
 with output_col:
-    if uploaded_file is None:
+    if not has_data:
         # welcome notes
         st.markdown("### Welcome 👋")
         st.markdown(
             """
-This demo lets you **upload a dataset**, choose the following:
+This demo lets you **select an example dataset or upload your own**, then choose:
 - a **group-by attribute**
 - an **aggregation attribute**
 - an **aggregation function**
@@ -1458,7 +1516,7 @@ Then compare:
 - **Heuristic** repair that maintains the trend
 - **Optimal (DP)** repair shown step-by-step
 
-Use the controls on the left to upload a dataset to begin.
+Use the controls on the left to get started.
             """
         )
         st.stop()
