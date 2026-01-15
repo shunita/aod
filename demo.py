@@ -1304,13 +1304,25 @@ def _clean_dataframe(dataframe):
     unnamed_cols = [c for c in dataframe.columns if c.startswith("Unnamed")]
     if unnamed_cols:
         dataframe = dataframe.drop(columns=unnamed_cols)
+
     # Clean up corrupted Unicode characters (replacement char sequences -> apostrophe)
     corrupted_base = chr(0xef) + chr(0xbf) + chr(0xbd)
     corrupted_with_trailing = corrupted_base + chr(0xef)
+
+    # Only select object columns (candidates for containing text)
     for col in dataframe.select_dtypes(include=["object"]).columns:
-        dataframe[col] = dataframe[col].str.replace(corrupted_base * 3, "'", regex=False)
-        dataframe[col] = dataframe[col].str.replace(corrupted_with_trailing, "'", regex=False)
-        dataframe[col] = dataframe[col].str.replace(corrupted_base, "'", regex=False)
+        # CHECK: Skip columns that don't contain any actual strings (e.g. Boolean/NaN columns)
+        if not dataframe[col].dropna().apply(lambda x: isinstance(x, str)).any():
+            continue
+
+        try:
+            dataframe[col] = dataframe[col].str.replace(corrupted_base * 3, "'", regex=False)
+            dataframe[col] = dataframe[col].str.replace(corrupted_with_trailing, "'", regex=False)
+            dataframe[col] = dataframe[col].str.replace(corrupted_base, "'", regex=False)
+        except AttributeError:
+            # Fallback for any other columns where .str accessor fails
+            continue
+
     return dataframe
 
 # --- Dataset Loading (before layout) ---
