@@ -1,7 +1,9 @@
 import os
 import pandas as pd
 from scipy.stats import entropy
-from DP.optimal_subset_with_constraint_unified import IncrementalDP
+
+from DP.input_parser import get_aggregation_function
+from DP.optimal_subset_with_constraint_unified import IncrementalDP, get_optimal_subset_F_first
 from Heuristic.aggr_main import greedy_algorithm
 
 pandas_function_map = {"sum": "sum", "max": "max", "avg": "mean", "median": "median"}
@@ -46,6 +48,7 @@ class TrendRepair(object):
         self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed, self.removed_by_heur = None, None, None, None
         self.removed_by_dp_step = []
         self.inc_dp = None
+        self.removed_by_full_dp = None
 
 
     def run_query(self):
@@ -74,6 +77,27 @@ class TrendRepair(object):
 
         self.heur_trend_result, self.heur_removed_per_group, self.heur_total_removed = trend_result, removed_per_group, len(removed_df)
         return trend_result, removed_per_group, len(removed_df)
+
+    def run_full_dp_no_heur(self):
+        # Max has no optimized aggregation packing version. The others (sum, median, avg) do.
+        should_optimize_agg_pack = self.agg_func != 'max'
+        Agg = get_aggregation_function(self.agg_func, agg_pack_opt=should_optimize_agg_pack)
+        subset_df, removed_df = get_optimal_subset_F_first(
+            self.df,
+            self.grouping_col,
+            self.aggregation_col,
+            Agg,
+            max_removed=None,
+            prune_dp_by_max_removed=None,
+            prune_h=False,
+            time_cutoff_seconds=None,
+            htrack_file = None)
+        self.removed_by_full_dp = removed_df
+        trend_result = subset_df.groupby(self.grouping_col)[self.aggregation_col].agg(
+            pandas_function_map[self.agg_func]).reset_index()
+        removed_per_group = removed_df.groupby(self.grouping_col)[self.aggregation_col].agg("count")
+        return trend_result, removed_per_group, len(removed_df)
+
 
     def __get_next_constraint(self, heur_trend_result):
         index_of_next_agg_value = self.computed_dp_so_far + 1
@@ -136,7 +160,7 @@ class TrendRepair(object):
     def summarize_distribution_differences(self,
                                            repair_name,
             # removed_subset: pd.DataFrame,
-            k: int = 10,
+            k: int = 20,
             epsilon: float = 1e-8,
             ignore_columns=None
     ):
