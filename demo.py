@@ -27,7 +27,7 @@ except Exception:
     _logger.warning("Hardcoded explanations are not available")
 
 IS_SLEEP = True
-USE_LIGHT_BG = True
+USE_LIGHT_BG = False
 HEURISTIC_COLOR = "#fca5a5"
 FIRST_STEP_COLOR = (252, 165, 165)  # light red
 OPTIMAL_COLOR = (134, 239, 172)  # light green
@@ -770,13 +770,21 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
 
     chart_slot.altair_chart(chart, width='stretch')
 
+# Shared layout for the results table under the chart
+RESULTS_TABLE_COLS = [3, 1.2, 1.2]
+DISPLAY_CELL_COLS = [0.18, 0.82]   # checkbox slot, then text slot
+RESULTS_TABLE_GAP = "small"
 
 def _render_table_header():
-    hcols = st.columns([1, 1.2, 1.2, 2])
-    hcols[0].markdown("**Display**")
-    hcols[1].markdown("**Runtime**")
-    hcols[2].markdown("**Tuples deleted**")
-    # hcols[3].markdown("**Explanation**")
+    cols = st.columns(RESULTS_TABLE_COLS, gap=RESULTS_TABLE_GAP)
+
+    # Match the internal structure of the Display column in the body:
+    # small checkbox slot + label text slot
+    display_cols = cols[0].columns(DISPLAY_CELL_COLS, gap="small")
+    display_cols[1].markdown("**Display**")
+
+    cols[1].markdown("**Runtime**")
+    cols[2].markdown("**Tuples deleted**")
 
 
 def is_heuristic_label(label: str) -> bool:
@@ -827,16 +835,27 @@ def _render_distribution_expander(label: str):
 
 
 def _render_row(label: str, key: str, runtime_s, deleted_n, runtime_total_s=None):
-    r = st.columns([3, 1.2, 1.2, 2])
-    r[0].checkbox(label, key=key)
+    row = st.container()
+    cols = row.columns(RESULTS_TABLE_COLS, gap=RESULTS_TABLE_GAP)
 
-    rt_disp = _fmt_sec(runtime_s) if runtime_total_s is None else f"{_fmt_sec(runtime_s)} ({_fmt_sec(runtime_total_s)})"
-    r[1].write(rt_disp)
-    r[2].write(_fmt_int(deleted_n))
+    # Split the Display cell into:
+    # [checkbox] [label text]
+    display_cols = cols[0].columns(DISPLAY_CELL_COLS, gap="small")
+    display_cols[0].checkbox("", key=key, label_visibility="collapsed")
+    display_cols[1].markdown(label)
+
+    rt_disp = (
+        _fmt_sec(runtime_s)
+        if runtime_total_s is None
+        else f"{_fmt_sec(runtime_s)} ({_fmt_sec(runtime_total_s)})"
+    )
+    cols[1].write(rt_disp)
+    cols[2].write(_fmt_int(deleted_n))
 
     # Distribution differences expander (only for Heuristic and Optimal/Intermediate steps)
     if label != "Original" and deleted_n is not None and deleted_n > 0:
-        _render_distribution_expander(label)
+        with row:
+            _render_distribution_expander(label)
 
 # temporary
 def _build_explanation_md(payload: dict) -> str:
