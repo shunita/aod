@@ -79,24 +79,71 @@ class TrendRepair(object):
         return trend_result, removed_per_group, len(removed_df)
 
     def run_full_dp_no_heur(self):
-        # Max has no optimized aggregation packing version. The others (sum, median, avg) do.
-        should_optimize_agg_pack = self.agg_func != 'max'
-        Agg = get_aggregation_function(self.agg_func, agg_pack_opt=should_optimize_agg_pack)
+        # DP parser expects uppercase aggregation names
+        dp_function_map = {
+            "sum": "SUM",
+            "max": "MAX",
+            "avg": "AVG",
+            "median": "MEDIAN",
+        }
+
+        dp_agg_func = dp_function_map[self.agg_func]
+
+        # Aggregation-pack optimization exists only for SUM / AVG / MEDIAN
+        should_optimize_agg_pack = dp_agg_func in {"SUM", "AVG", "MEDIAN"}
+
+        Agg = get_aggregation_function(dp_agg_func, agg_pack_opt=should_optimize_agg_pack)
+
         subset_df, removed_df = get_optimal_subset_F_first(
             self.df,
-            self.grouping_col,
+            [self.grouping_col],
             self.aggregation_col,
             Agg,
             max_removed=None,
             prune_dp_by_max_removed=None,
             prune_h=False,
             time_cutoff_seconds=None,
-            htrack_file = None)
+            htrack_file=None,
+        )
+
         self.removed_by_full_dp = removed_df
+        self.removed_by_dp_step = [removed_df.copy()]
+        self.computed_dp_so_far = len(self.group_keys)
+
+        # Per-group tuple stats for the final optimal solution (used by the UI)
+        self.last_step_left_per_group = subset_df.groupby(self.grouping_col, dropna=False).size()
+        self.last_step_left_per_group = self.last_step_left_per_group.reindex(
+            self.original_tuples_per_group.index, fill_value=0
+        ).astype(int)
+        self.last_step_deleted_per_group = self.original_tuples_per_group.subtract(
+            self.last_step_left_per_group, fill_value=0
+        ).astype(int)
+
         trend_result = subset_df.groupby(self.grouping_col)[self.aggregation_col].agg(
-            pandas_function_map[self.agg_func]).reset_index()
+            pandas_function_map[self.agg_func]
+        ).reset_index()
         removed_per_group = removed_df.groupby(self.grouping_col)[self.aggregation_col].agg("count")
         return trend_result, removed_per_group, len(removed_df)
+
+    # def run_full_dp_no_heur(self):
+    #     # Max has no optimized aggregation packing version. The others (sum, median, avg) do.
+    #     should_optimize_agg_pack = self.agg_func != 'max'
+    #     Agg = get_aggregation_function(self.agg_func, agg_pack_opt=should_optimize_agg_pack)
+    #     subset_df, removed_df = get_optimal_subset_F_first(
+    #         self.df,
+    #         self.grouping_col,
+    #         self.aggregation_col,
+    #         Agg,
+    #         max_removed=None,
+    #         prune_dp_by_max_removed=None,
+    #         prune_h=False,
+    #         time_cutoff_seconds=None,
+    #         htrack_file = None)
+    #     self.removed_by_full_dp = removed_df
+    #     trend_result = subset_df.groupby(self.grouping_col)[self.aggregation_col].agg(
+    #         pandas_function_map[self.agg_func]).reset_index()
+    #     removed_per_group = removed_df.groupby(self.grouping_col)[self.aggregation_col].agg("count")
+    #     return trend_result, removed_per_group, len(removed_df)
 
 
     def __get_next_constraint(self, heur_trend_result):
@@ -193,7 +240,12 @@ class TrendRepair(object):
         if repair_name == "heuristic":
             removed_subset = self.removed_by_heur
         else:
-            removed_subset = self.removed_by_dp_step[-1]
+            if self.removed_by_dp_step:
+                removed_subset = self.removed_by_dp_step[-1]
+            elif self.removed_by_full_dp is not None:
+                removed_subset = self.removed_by_full_dp
+            else:
+                return []
         rest = self.df[~self.df.index.isin(removed_subset.index)]
 
         results = []

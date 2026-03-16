@@ -1316,7 +1316,7 @@ def _maybe_show_explanation_dialog():
 EXAMPLE_DATASETS = {
     # "Stack Overflow (Binned Salary)": "data/SO/so_clean_for_trend_outliers_binned_salary.csv",
     "Salary by Education (Stack Overflow)": "data/SO/so_concise_for_edlevel_median_USA.csv",
-    "Diabetes by Age": "data/diabetes/diabetes_prediction_dataset_binned_age.csv",
+    "Diabetes by Age": "data/diabetes/diabetes_preprocessed.csv",
     "Loans by Employment Time (German Credit)": "data/german_credit/german_textual.csv",
 }
 UPLOAD_OPTION = "Upload your own..."
@@ -1605,38 +1605,101 @@ with output_col:
             _auto_generate_single_explanation("Heuristic")
 
     with run_col3:
-        step_done = (max_steps <= 0) or (current_steps >= max_steps)
-        if st.button("Optimal", width='stretch', disabled=step_done):
-            if st.session_state.get("heur_df") is None:
-                def opt_heur_progress(iteration, smvi, removed):
-                    progress_slot.info(f"Heuristic: iteration {iteration}, removed {removed} tuples")
-
-                if st.session_state.get("original_df") is None:
-                    progress_slot.info("Computing original...")
-                    t0 = time.perf_counter()
-                    st.session_state["original_df"] = tr.run_query()
-                    st.session_state["runtime_original"] = time.perf_counter() - t0
-                    st.session_state["deleted_original"] = 0
-
-                progress_slot.info("Running heuristic (required)...")
+        step_done = bool(st.session_state.get("partial_steps"))
+        if st.button("Optimal", width="stretch", disabled=step_done):
+            if st.session_state.get("original_df") is None:
+                progress_slot.info("Computing original...")
                 t0 = time.perf_counter()
-                heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=opt_heur_progress)
+                st.session_state["original_df"] = tr.run_query()
+                st.session_state["runtime_original"] = time.perf_counter() - t0
+                st.session_state["deleted_original"] = 0
+
+            # Reset previous optimal-step UI state
+            st.session_state["partial_steps"] = []
+            st.session_state["runtime_steps"] = []
+            st.session_state["deleted_steps"] = []
+            st.session_state["step_deleted_per_group"] = []
+            st.session_state["step_left_per_group"] = []
+
+            for k in list(st.session_state.keys()):
+                if k.startswith("cb_show_step_"):
+                    del st.session_state[k]
+
+            # Reset auto-run flags
+            st.session_state["run_optimal_seq"] = False
+            st.session_state["auto_in_progress"] = False
+            st.session_state["auto_visible_step"] = None
+            st.session_state["pending_step_checkbox_reset"] = False
+            st.session_state["latest_step_for_reset"] = None
+
+            # CASE 1: heuristic already ran -> keep the old bounded DP behavior
+            if st.session_state.get("heur_df") is not None:
+                st.session_state["max_steps"] = len(tr.group_keys)
+                progress_slot.info("Running optimal DP with heuristic bound...")
+                st.session_state["run_optimal_seq"] = True
+
+            # CASE 2: no heuristic yet -> allow direct DP-only run
+            else:
+                progress_slot.info("Running optimal DP (no heuristic bound)...")
+                t0 = time.perf_counter()
+                optimal_trend_result, _, optimal_total_removed = tr.run_full_dp_no_heur()
+                runtime_optimal = time.perf_counter() - t0
                 progress_slot.empty()
-                st.session_state["heur_df"] = heur_trend_result
-                st.session_state["runtime_heuristic"] = time.perf_counter() - t0
-                st.session_state["deleted_heuristic"] = int(heur_total_removed)
-                _auto_generate_single_explanation("Heuristic")
 
-                if getattr(tr, "heur_deleted_per_group", None) is not None:
-                    st.session_state["heur_deleted_per_group"] = {
-                        str(k): int(v) for k, v in tr.heur_deleted_per_group.to_dict().items()
-                    }
-                if getattr(tr, "heur_left_per_group", None) is not None:
-                    st.session_state["heur_left_per_group"] = {
-                        str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
-                    }
+                st.session_state["partial_steps"] = [optimal_trend_result]
+                st.session_state["runtime_steps"] = [runtime_optimal]
+                st.session_state["deleted_steps"] = [int(optimal_total_removed)]
+                st.session_state["max_steps"] = 1
+                st.session_state["cb_show_step_1"] = True
 
-            st.session_state["run_optimal_seq"] = True
+                if getattr(tr, "last_step_deleted_per_group", None) is not None:
+                    st.session_state["step_deleted_per_group"] = [
+                        {str(k): int(v) for k, v in tr.last_step_deleted_per_group.to_dict().items()}
+                    ]
+                if getattr(tr, "last_step_left_per_group", None) is not None:
+                    st.session_state["step_left_per_group"] = [
+                        {str(k): int(v) for k, v in tr.last_step_left_per_group.to_dict().items()}
+                    ]
+
+                st.session_state["pending_step_checkbox_reset"] = True
+                st.session_state["latest_step_for_reset"] = 1
+
+                st.session_state.get("llm_explanations", {}).pop("Optimal", None)
+                _auto_generate_single_explanation("Optimal")
+
+    # with run_col3:
+    #     step_done = (max_steps <= 0) or (current_steps >= max_steps)
+    #     if st.button("Optimal", width='stretch', disabled=step_done):
+    #         if st.session_state.get("heur_df") is None:
+    #             def opt_heur_progress(iteration, smvi, removed):
+    #                 progress_slot.info(f"Heuristic: iteration {iteration}, removed {removed} tuples")
+
+    #             if st.session_state.get("original_df") is None:
+    #                 progress_slot.info("Computing original...")
+    #                 t0 = time.perf_counter()
+    #                 st.session_state["original_df"] = tr.run_query()
+    #                 st.session_state["runtime_original"] = time.perf_counter() - t0
+    #                 st.session_state["deleted_original"] = 0
+
+    #             progress_slot.info("Running heuristic (required)...")
+    #             t0 = time.perf_counter()
+    #             heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=opt_heur_progress)
+    #             progress_slot.empty()
+    #             st.session_state["heur_df"] = heur_trend_result
+    #             st.session_state["runtime_heuristic"] = time.perf_counter() - t0
+    #             st.session_state["deleted_heuristic"] = int(heur_total_removed)
+    #             _auto_generate_single_explanation("Heuristic")
+
+    #             if getattr(tr, "heur_deleted_per_group", None) is not None:
+    #                 st.session_state["heur_deleted_per_group"] = {
+    #                     str(k): int(v) for k, v in tr.heur_deleted_per_group.to_dict().items()
+    #                 }
+    #             if getattr(tr, "heur_left_per_group", None) is not None:
+    #                 st.session_state["heur_left_per_group"] = {
+    #                     str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
+    #                 }
+
+    #         st.session_state["run_optimal_seq"] = True
 
     # Auto-generate LLM explanations for Optimal steps (batch) AFTER the smooth auto-run finishes.
     if (
