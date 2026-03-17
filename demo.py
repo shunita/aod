@@ -358,38 +358,11 @@ def _recolor_intermediate_steps_by_deleted():
 
 def _compute_deleted_for_current_step(tr: TrendRepair):
     """
-    Compute 'tuples deleted' for the *current* optimal step.
+    Backward-compatible UI helper delegated to TrendRepair.
     Call immediately after compute_next_partial_solution().
     """
     try:
-        if tr.removed_by_heur is None or tr.heur_trend_result is None or tr.inc_dp is None:
-            return None
-
-        step_num = int(tr.computed_dp_so_far)
-        i = step_num - 1
-        if i < 0:
-            return None
-
-        # last step
-        if i + 1 >= len(tr.group_keys):
-            removed_tuples_up_to_i = tr.inc_dp.compute_up_to_i(i, None)
-            if removed_tuples_up_to_i is None:
-                return None
-            return int(len(removed_tuples_up_to_i))
-
-        heur_map = tr.heur_trend_result.set_index(tr.grouping_col).to_dict()[tr.aggregation_col]
-        next_group_key = tr.group_keys[i + 1]
-        cutoff = heur_map.get(next_group_key)
-
-        removed_tuples_up_to_i = tr.inc_dp.compute_up_to_i(i, cutoff)
-
-        remaining_group_keys = tr.group_keys[i + 1 :]
-        removed_tuples_from_i_plus_1 = tr.removed_by_heur[
-            tr.removed_by_heur[tr.grouping_col].isin(remaining_group_keys)
-        ]
-
-        all_removed_index = removed_tuples_up_to_i.index.append(removed_tuples_from_i_plus_1.index)
-        return int(len(all_removed_index))
+        return tr.compute_deleted_for_current_step()
     except Exception as e:
         _logger.warning("_compute_deleted_for_current_step failed: %s", e)
         return None
@@ -683,7 +656,9 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
                 _logger.warning("Failed to convert values to float: v1=%s, v2=%s: %s", v1, v2, e)
                 continue
 
-            if v1f > v2f:
+            trend_dir = st.session_state.get("trend_direction", "non-decreasing")
+            is_violation = (v1f > v2f) if trend_dir != "non-increasing" else (v1f < v2f)
+            if is_violation:
                 pts.append({"Pair": pair_id, "Group": g1, "Value": v1f, "SeriesKey": "Original"})
                 pts.append({"Pair": pair_id, "Group": g2, "Value": v2f, "SeriesKey": "Original"})
                 ends.append({"Group": g2, "Value": v2f, "SeriesKey": "Original"})
@@ -710,7 +685,11 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
 
             dec_head = (
                 alt.Chart(dec_end)
-                .mark_point(shape="triangle-down", size=120, color="red")
+                .mark_point(
+                shape=("triangle-down" if st.session_state.get("trend_direction", "non-decreasing") != "non-increasing" else "triangle-up"),
+                size=120,
+                color="red",
+            )
                 .encode(
                     x=alt.X("Group:N", sort=ordered_groups),
                     y=alt.Y("Value:Q"),
@@ -868,8 +847,8 @@ def _build_explanation_md(payload: dict) -> str:
     # Pull current params (best-effort)
     params_key = st.session_state.get("params_key")
     group_attr = agg_attr = agg_func = None
-    if isinstance(params_key, tuple) and len(params_key) == 4:
-        _, group_attr, agg_attr, agg_func = params_key
+    if isinstance(params_key, tuple) and len(params_key) >= 4:
+        _, group_attr, agg_attr, agg_func = params_key[:4]
 
     tr = st.session_state.get("tr_obj")
 
@@ -887,15 +866,18 @@ def _build_explanation_md(payload: dict) -> str:
     if group_attr and agg_attr and agg_func:
         lines.append("")
         # lines.append("**Query:**")
-        lines.append(f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}")
+        exp = "increase with" if st.session_state.get("trend_direction", "non-decreasing") != "non-increasing" else "decrease with"
+        lines.append(f"Trend: expect {str(agg_func).upper()}({agg_attr}) to {exp} {group_attr}")
         # lines.append(f"`SELECT {str(agg_func).upper()}({agg_attr}) GROUP BY {group_attr}`")
 
     lines.append("")
 
     if label == "Original":
         lines.append("This is the baseline grouped aggregate computed directly from the uploaded data (no deletions).")
+        trend_dir = st.session_state.get("trend_direction", "non-decreasing")
+        violation_desc = "adjacent decreases" if trend_dir != "non-increasing" else "adjacent increases"
         lines.append(
-            "Adjacent decreases in the *Original* series are highlighted with red arrows/lines to make trend violations easy to spot."
+            f"{violation_desc.capitalize()} in the *Original* series are highlighted with red arrows/lines to make trend violations easy to spot."
         )
     elif is_heuristic_label(label):
         lines.append(
@@ -924,12 +906,13 @@ def _build_explanation_md(payload: dict) -> str:
             # Add the step boundary details when available
             if not is_final and getattr(tr, "heur_trend_result", None) is not None:
                 try:
-                    i = step_num - 1
-                    next_group_key = tr.group_keys[i + 1]
-                    heur_map = tr.heur_trend_result.set_index(tr.grouping_col).to_dict()[tr.aggregation_col]
-                    cutoff = heur_map.get(next_group_key)
-                    lines.append("")
-                    lines.append(f"**Step boundary:** next group = `{next_group_key}`")
+                    boundary = tr.get_step_boundary_info(step_num)
+                    next_group_key = boundary.get("next_group_key")
+                    cutoff = boundary.get("cutoff")
+                    if next_group_key is not None or cutoff is not None:
+                        lines.append("")
+                    if next_group_key is not None:
+                        lines.append(f"**Step boundary:** next group = `{next_group_key}`")
                     if cutoff is not None:
                         lines.append(f"**Heuristic cutoff (next group's aggregate):** `{cutoff}`")
                 except Exception as e:
@@ -974,8 +957,8 @@ def _build_llm_payload(label: str, runtime_s=None):
     """
     params_key = st.session_state.get("params_key")
     group_attr = agg_attr = agg_func = None
-    if isinstance(params_key, tuple) and len(params_key) == 4:
-        _, group_attr, agg_attr, agg_func = params_key
+    if isinstance(params_key, tuple) and len(params_key) >= 4:
+        _, group_attr, agg_attr, agg_func = params_key[:4]
 
     tr = st.session_state.get("tr_obj")
     group_order = []
@@ -1463,11 +1446,17 @@ with controls_col:
 
     st.session_state["trend_direction"] = trend_direction
 
-    params_key = (data_key, group_attr, agg_attr, agg_func)
+    params_key = (data_key, group_attr, agg_attr, agg_func, trend_direction)
 
     if st.session_state.get("params_key") != params_key:
         st.session_state["params_key"] = params_key
-        st.session_state["tr_obj"] = TrendRepair(df, agg_func, group_attr, agg_attr)
+        st.session_state["tr_obj"] = TrendRepair(
+            df,
+            agg_func,
+            group_attr,
+            agg_attr,
+            trend_direction=trend_direction,
+        )
 
         # Per-group tuple counts (for chart hover tooltips)
         _tuple_counts = df.groupby(group_attr, dropna=False).size()
@@ -1533,7 +1522,8 @@ current_steps = len(st.session_state.get("partial_steps", []))
 
 with output_col:
     # Query description banner
-    query_sql = f"Trend: expect {str(agg_func).upper()}({agg_attr}) to increase with {group_attr}"
+    query_verb = "increase with" if trend_direction != "non-increasing" else "decrease with"
+    query_sql = f"Trend: expect {str(agg_func).upper()}({agg_attr}) to {query_verb} {group_attr}"
 
     q_fg = "#111111" if USE_LIGHT_BG else "#ffffff"
     q_bg = "rgba(0,0,0,0.04)" if USE_LIGHT_BG else "rgba(255,255,255,0.06)"
@@ -1666,40 +1656,6 @@ with output_col:
 
                 st.session_state.get("llm_explanations", {}).pop("Optimal", None)
                 _auto_generate_single_explanation("Optimal")
-
-    # with run_col3:
-    #     step_done = (max_steps <= 0) or (current_steps >= max_steps)
-    #     if st.button("Optimal", width='stretch', disabled=step_done):
-    #         if st.session_state.get("heur_df") is None:
-    #             def opt_heur_progress(iteration, smvi, removed):
-    #                 progress_slot.info(f"Heuristic: iteration {iteration}, removed {removed} tuples")
-
-    #             if st.session_state.get("original_df") is None:
-    #                 progress_slot.info("Computing original...")
-    #                 t0 = time.perf_counter()
-    #                 st.session_state["original_df"] = tr.run_query()
-    #                 st.session_state["runtime_original"] = time.perf_counter() - t0
-    #                 st.session_state["deleted_original"] = 0
-
-    #             progress_slot.info("Running heuristic (required)...")
-    #             t0 = time.perf_counter()
-    #             heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=opt_heur_progress)
-    #             progress_slot.empty()
-    #             st.session_state["heur_df"] = heur_trend_result
-    #             st.session_state["runtime_heuristic"] = time.perf_counter() - t0
-    #             st.session_state["deleted_heuristic"] = int(heur_total_removed)
-    #             _auto_generate_single_explanation("Heuristic")
-
-    #             if getattr(tr, "heur_deleted_per_group", None) is not None:
-    #                 st.session_state["heur_deleted_per_group"] = {
-    #                     str(k): int(v) for k, v in tr.heur_deleted_per_group.to_dict().items()
-    #                 }
-    #             if getattr(tr, "heur_left_per_group", None) is not None:
-    #                 st.session_state["heur_left_per_group"] = {
-    #                     str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
-    #                 }
-
-    #         st.session_state["run_optimal_seq"] = True
 
     # Auto-generate LLM explanations for Optimal steps (batch) AFTER the smooth auto-run finishes.
     if (
