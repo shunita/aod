@@ -1349,21 +1349,6 @@ def _read_local_csv(csv_path: str) -> pd.DataFrame:
     raise ValueError(f"Failed to load dataset from path: {csv_path}")
 
 
-def _clear_query_widget_state():
-    """
-    Clear sidebar widget state so a newly loaded dataset does not inherit
-    stale grouping / aggregation selections from the previous one.
-    """
-    for key in [
-        "group_attr_select",
-        "agg_attr_select",
-        "agg_func_select",
-        "trend_direction_radio",
-        "_dataset_defaults_applied_for",
-    ]:
-        st.session_state.pop(key, None)
-
-
 def _apply_dataset_defaults(data_key, available_columns, numeric_columns):
     """
     Apply preset defaults exactly once per loaded dataset.
@@ -1431,6 +1416,69 @@ def _clean_dataframe(dataframe):
             continue
 
     return dataframe
+
+def _clear_query_widget_state():
+    for key in [
+        "group_attr_select",
+        "agg_attr_select",
+        "agg_func_select",
+        "trend_direction_radio",
+        "_group_attr_widget",
+        "_agg_attr_widget",
+        "_agg_func_widget",
+        "_trend_direction_widget",
+        "_dataset_defaults_applied_for",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def _on_group_attr_change():
+    st.session_state["group_attr_select"] = st.session_state["_group_attr_widget"]
+
+
+def _on_agg_attr_change():
+    st.session_state["agg_attr_select"] = st.session_state["_agg_attr_widget"]
+
+
+def _on_agg_func_change():
+    st.session_state["agg_func_select"] = st.session_state["_agg_func_widget"]
+
+
+def _on_trend_direction_change():
+    st.session_state["trend_direction_radio"] = st.session_state["_trend_direction_widget"]
+
+
+def _ensure_query_state(available_columns, numeric_columns):
+    """
+    Keep each query control independent.
+    Only change agg_attr automatically when it becomes invalid
+    (for example, when it equals the selected grouping column).
+    """
+    if not available_columns:
+        return []
+
+    if st.session_state.get("group_attr_select") not in available_columns:
+        st.session_state["group_attr_select"] = available_columns[0]
+
+    agg_columns = [c for c in numeric_columns if c != st.session_state["group_attr_select"]]
+
+    if agg_columns and st.session_state.get("agg_attr_select") not in agg_columns:
+        st.session_state["agg_attr_select"] = agg_columns[0]
+
+    if st.session_state.get("agg_func_select") not in {"sum", "avg", "median", "max"}:
+        st.session_state["agg_func_select"] = "avg"
+
+    if st.session_state.get("trend_direction_radio") not in {"non-decreasing", "non-increasing"}:
+        st.session_state["trend_direction_radio"] = "non-decreasing"
+
+    # Mirror semantic state into widget state before rendering widgets
+    st.session_state["_group_attr_widget"] = st.session_state["group_attr_select"]
+    if agg_columns:
+        st.session_state["_agg_attr_widget"] = st.session_state["agg_attr_select"]
+    st.session_state["_agg_func_widget"] = st.session_state["agg_func_select"]
+    st.session_state["_trend_direction_widget"] = st.session_state["trend_direction_radio"]
+
+    return agg_columns
 
 # --- Dataset Loading (before layout) ---
 # Use a separate session state key to track loaded dataset (not the widget key)
@@ -1527,44 +1575,62 @@ with controls_col:
     numeric_columns = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
     _apply_dataset_defaults(data_key, available_columns, numeric_columns)
+    _ensure_query_state(available_columns, numeric_columns)
 
     group_attr = st.selectbox(
         "Grouping attribute",
         available_columns,
-        key="group_attr_select",
+        index=available_columns.index(st.session_state["group_attr_select"]),
+        key="_group_attr_widget",
+        on_change=_on_group_attr_change,
     )
 
-    # Exclude the grouping column from aggregation options (same column causes pandas error)
+    # Always use semantic state after callback
+    group_attr = st.session_state["group_attr_select"]
+
+    # Exclude the grouping column from aggregation options
     agg_columns = [c for c in numeric_columns if c != group_attr]
     if not agg_columns:
         st.warning("No numeric columns available for aggregation (excluding the grouping column).")
         st.stop()
 
-    preset = st.session_state.get("loaded_dataset_preset")
-    preferred_agg = preset.get("agg_attr") if isinstance(preset, dict) else None
+    # Only change agg_attr if it became invalid
     if st.session_state.get("agg_attr_select") not in agg_columns:
-        st.session_state["agg_attr_select"] = (
-            preferred_agg if preferred_agg in agg_columns else agg_columns[0]
-        )
+        st.session_state["agg_attr_select"] = agg_columns[0]
+        st.session_state["_agg_attr_widget"] = agg_columns[0]
 
     agg_attr = st.selectbox(
         "Aggregation attribute",
         agg_columns,
-        key="agg_attr_select",
+        index=agg_columns.index(st.session_state["agg_attr_select"]),
+        key="_agg_attr_widget",
+        on_change=_on_agg_attr_change,
     )
 
+    agg_func_options = ["sum", "avg", "median", "max"]
     agg_func = st.selectbox(
         "Aggregation function",
-        ["sum", "avg", "median", "max"],
-        key="agg_func_select",
+        agg_func_options,
+        index=agg_func_options.index(st.session_state["agg_func_select"]),
+        key="_agg_func_widget",
+        on_change=_on_agg_func_change,
     )
 
+    trend_options = ["non-decreasing", "non-increasing"]
     trend_direction = st.radio(
         "Trend direction",
-        ["non-decreasing", "non-increasing"],
+        trend_options,
+        index=trend_options.index(st.session_state["trend_direction_radio"]),
         horizontal=True,
-        key="trend_direction_radio",
+        key="_trend_direction_widget",
+        on_change=_on_trend_direction_change,
     )
+
+    # Always use semantic state values
+    group_attr = st.session_state["group_attr_select"]
+    agg_attr = st.session_state["agg_attr_select"]
+    agg_func = st.session_state["agg_func_select"]
+    trend_direction = st.session_state["trend_direction_radio"]
 
     st.session_state["trend_direction"] = trend_direction
 
