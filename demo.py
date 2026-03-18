@@ -5,6 +5,7 @@ import pandas as pd
 import altair as alt
 import json
 import re
+import os
 
 from trend_demo_api import TrendRepair
 
@@ -1294,15 +1295,115 @@ def _maybe_show_explanation_dialog():
     _explanation_dialog()
     st.session_state["explain_open"] = False
 
-
 # Example datasets available in data/ folder
 EXAMPLE_DATASETS = {
-    # "Stack Overflow (Binned Salary)": "data/SO/so_clean_for_trend_outliers_binned_salary.csv",
-    "Salary by Education (Stack Overflow)": "data/SO/so_concise_for_edlevel_median_USA.csv",
-    "Diabetes by Age": "data/diabetes/diabetes_preprocessed.csv",
-    "Loans by Employment Time (German Credit)": "data/german_credit/german_textual.csv",
+    "Diabetes by Age": {
+        "path": os.path.join("data", "diabetes", "diabetes_preprocessed.csv"),
+        "group_attr": "age",
+        "agg_attr": "diabetes",
+        "agg_func": "avg",
+        "trend_direction": "non-decreasing",
+    },
+    "Loans by Employment Time (German Credit)": {
+        "path": os.path.join("data", "german_credit", "german_textual.csv"),
+        "group_attr": "present_employment_since_numeric",
+        "agg_attr": "good_loan",
+        "agg_func": "avg",
+        "trend_direction": "non-decreasing",
+    },
+    "Stack Overflow (Binned Salary)": {
+        "path": os.path.join("data", "stack overflow", "so_for_edlevel_median_USA.csv"),
+        "group_attr": "Education",
+        "agg_attr": "Salary",
+        "agg_func": "median",
+        "trend_direction": "non-decreasing",
+    },
+    "Zillow": {
+        "path": os.path.join("data", "zillow", "properties_1995-2010_8K.csv"),
+        "group_attr": "year_range2",
+        "agg_attr": "property_value_$1K",
+        "agg_func": "median",
+        "trend_direction": "non-decreasing",
+    },
+    "H&M": {
+        "path": os.path.join("data", "hm", "may_june_july_transactions_processed_sample10K.csv"),
+        "group_attr": "age_group_order",
+        "agg_attr": "price_int",
+        "agg_func": "sum",
+        "trend_direction": "non-decreasing",
+    },
 }
 UPLOAD_OPTION = "Upload your own..."
+
+
+def _read_local_csv(csv_path: str) -> pd.DataFrame:
+    last_error = None
+    for encoding in ("utf-8", "latin-1", "cp1252"):
+        try:
+            return pd.read_csv(csv_path, encoding=encoding)
+        except UnicodeDecodeError as e:
+            last_error = e
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError(f"Failed to load dataset from path: {csv_path}")
+
+
+def _clear_query_widget_state():
+    """
+    Clear sidebar widget state so a newly loaded dataset does not inherit
+    stale grouping / aggregation selections from the previous one.
+    """
+    for key in [
+        "group_attr_select",
+        "agg_attr_select",
+        "agg_func_select",
+        "trend_direction_radio",
+        "_dataset_defaults_applied_for",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def _apply_dataset_defaults(data_key, available_columns, numeric_columns):
+    """
+    Apply preset defaults exactly once per loaded dataset.
+    Falls back gracefully if a configured column is missing.
+    """
+    if st.session_state.get("_dataset_defaults_applied_for") == data_key:
+        return
+
+    preset = st.session_state.get("loaded_dataset_preset")
+
+    preferred_group = preset.get("group_attr") if isinstance(preset, dict) else None
+    default_group = (
+        preferred_group
+        if preferred_group in available_columns
+        else (available_columns[0] if available_columns else None)
+    )
+
+    if default_group is not None:
+        st.session_state["group_attr_select"] = default_group
+
+    agg_options = [c for c in numeric_columns if c != default_group]
+    preferred_agg = preset.get("agg_attr") if isinstance(preset, dict) else None
+    if agg_options:
+        st.session_state["agg_attr_select"] = (
+            preferred_agg if preferred_agg in agg_options else agg_options[0]
+        )
+
+    preferred_func = preset.get("agg_func") if isinstance(preset, dict) else None
+    st.session_state["agg_func_select"] = (
+        preferred_func if preferred_func in {"sum", "avg", "median", "max"} else "avg"
+    )
+
+    preferred_trend = preset.get("trend_direction") if isinstance(preset, dict) else None
+    st.session_state["trend_direction_radio"] = (
+        preferred_trend
+        if preferred_trend in {"non-decreasing", "non-increasing"}
+        else "non-decreasing"
+    )
+
+    st.session_state["_dataset_defaults_applied_for"] = data_key
 
 # Helper function to clean loaded dataframe
 def _clean_dataframe(dataframe):
@@ -1363,33 +1464,29 @@ if not has_data:
                 try:
                     loaded_df = pd.read_csv(uploaded)
                     loaded_df = _clean_dataframe(loaded_df)
+
+                    _clear_query_widget_state()
                     st.session_state["loaded_dataset_name"] = uploaded.name
                     st.session_state["loaded_dataset_df"] = loaded_df
                     st.session_state["loaded_dataset_key"] = uploaded.name
+                    st.session_state["loaded_dataset_preset"] = None
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to load CSV: {e}")
 
         elif selected and selected != "-- Select a dataset --":
-            # Load the example dataset
-            example_path = EXAMPLE_DATASETS.get(selected)
-            if example_path:
+            example_config = EXAMPLE_DATASETS.get(selected)
+            if example_config:
                 try:
-                    loaded_df = None
-                    for encoding in ["utf-8", "latin-1", "cp1252"]:
-                        try:
-                            loaded_df = pd.read_csv(example_path, encoding=encoding)
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    if loaded_df is not None:
-                        loaded_df = _clean_dataframe(loaded_df)
-                        st.session_state["loaded_dataset_name"] = selected
-                        st.session_state["loaded_dataset_df"] = loaded_df
-                        st.session_state["loaded_dataset_key"] = example_path
-                        st.rerun()
-                    else:
-                        st.error("Failed to load dataset: encoding error")
+                    loaded_df = _read_local_csv(example_config["path"])
+                    loaded_df = _clean_dataframe(loaded_df)
+
+                    _clear_query_widget_state()
+                    st.session_state["loaded_dataset_name"] = selected
+                    st.session_state["loaded_dataset_df"] = loaded_df
+                    st.session_state["loaded_dataset_key"] = example_config["path"]
+                    st.session_state["loaded_dataset_preset"] = example_config
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Failed to load dataset: {e}")
 
@@ -1412,13 +1509,14 @@ with controls_col:
     # "Change dataset" button
     st.divider()
     if st.button("Change dataset", width='stretch'):
-        # Clear loaded dataset from session state
         st.session_state.pop("loaded_dataset_name", None)
         st.session_state.pop("loaded_dataset_df", None)
         st.session_state.pop("loaded_dataset_key", None)
+        st.session_state.pop("loaded_dataset_preset", None)
         st.session_state.pop("params_key", None)
         st.session_state.pop("tr_obj", None)
         st.session_state.pop("distribution_summaries", None)
+        _clear_query_widget_state()
         st.rerun()
 
     st.subheader("Query")
@@ -1428,18 +1526,42 @@ with controls_col:
     # Only numeric columns can be aggregated
     numeric_columns = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
-    group_attr = st.selectbox("Grouping attribute", available_columns, key="group_attr_select")
+    _apply_dataset_defaults(data_key, available_columns, numeric_columns)
+
+    group_attr = st.selectbox(
+        "Grouping attribute",
+        available_columns,
+        key="group_attr_select",
+    )
+
     # Exclude the grouping column from aggregation options (same column causes pandas error)
     agg_columns = [c for c in numeric_columns if c != group_attr]
     if not agg_columns:
         st.warning("No numeric columns available for aggregation (excluding the grouping column).")
         st.stop()
-    agg_attr = st.selectbox("Aggregation attribute", agg_columns, key="agg_attr_select")
-    agg_func = st.selectbox("Aggregation function", ["sum", "avg", "median", "max"], key="agg_func_select")
+
+    preset = st.session_state.get("loaded_dataset_preset")
+    preferred_agg = preset.get("agg_attr") if isinstance(preset, dict) else None
+    if st.session_state.get("agg_attr_select") not in agg_columns:
+        st.session_state["agg_attr_select"] = (
+            preferred_agg if preferred_agg in agg_columns else agg_columns[0]
+        )
+
+    agg_attr = st.selectbox(
+        "Aggregation attribute",
+        agg_columns,
+        key="agg_attr_select",
+    )
+
+    agg_func = st.selectbox(
+        "Aggregation function",
+        ["sum", "avg", "median", "max"],
+        key="agg_func_select",
+    )
+
     trend_direction = st.radio(
         "Trend direction",
         ["non-decreasing", "non-increasing"],
-        index=0,
         horizontal=True,
         key="trend_direction_radio",
     )
