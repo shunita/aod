@@ -1739,6 +1739,9 @@ with output_col:
     # --- Run Buttons (horizontal) ---
     run_col1, run_col2, run_col3 = st.columns(3)
 
+    is_max_agg = (agg_func == "max")
+    step_done = bool(st.session_state.get("partial_steps"))
+
     with run_col1:
         if st.button("Original", width='stretch'):
             with st.spinner("Running..."):
@@ -1752,7 +1755,7 @@ with output_col:
     progress_slot = st.empty()
 
     with run_col2:
-        if st.button("Heuristic", width='stretch'):
+        if st.button("Heuristic", width='stretch', disabled=is_max_agg):
             def heur_progress(iteration, smvi, removed):
                 progress_slot.info(f"Heuristic: iteration {iteration}, removed {removed} tuples")
 
@@ -1782,8 +1785,10 @@ with output_col:
             st.session_state.get("llm_explanations", {}).pop("Heuristic", None)
             _auto_generate_single_explanation("Heuristic")
 
+    if is_max_agg:
+        st.caption("Heuristic is disabled for MAX.")
+
     with run_col3:
-        step_done = bool(st.session_state.get("partial_steps"))
         if st.button("Optimal", width="stretch", disabled=step_done):
             if st.session_state.get("original_df") is None:
                 progress_slot.info("Computing original...")
@@ -1810,13 +1815,15 @@ with output_col:
             st.session_state["pending_step_checkbox_reset"] = False
             st.session_state["latest_step_for_reset"] = None
 
-            # CASE 1: heuristic already ran -> keep the old bounded DP behavior
-            if st.session_state.get("heur_df") is not None:
+            use_direct_dp = is_max_agg or (st.session_state.get("heur_df") is None)
+
+            # CASE 1: heuristic already ran and we are NOT on MAX
+            if not use_direct_dp:
                 st.session_state["max_steps"] = len(tr.group_keys)
                 progress_slot.info("Running optimal DP with heuristic bound...")
                 st.session_state["run_optimal_seq"] = True
 
-            # CASE 2: no heuristic yet -> allow direct DP-only run
+            # CASE 2: MAX, or no heuristic yet -> direct DP-only run
             else:
                 progress_slot.info("Running optimal DP (no heuristic bound)...")
                 t0 = time.perf_counter()
@@ -1844,6 +1851,115 @@ with output_col:
 
                 st.session_state.get("llm_explanations", {}).pop("Optimal", None)
                 _auto_generate_single_explanation("Optimal")
+
+    # # --- Run Buttons (horizontal) ---
+    # run_col1, run_col2, run_col3 = st.columns(3)
+
+    # with run_col1:
+    #     if st.button("Original", width='stretch'):
+    #         with st.spinner("Running..."):
+    #             t0 = time.perf_counter()
+    #             st.session_state["original_df"] = tr.run_query()
+    #             st.session_state["runtime_original"] = time.perf_counter() - t0
+    #             st.session_state["deleted_original"] = 0
+    #             _auto_generate_single_explanation("Original")
+
+    # # Unified progress slot (below buttons, above chart)
+    # progress_slot = st.empty()
+
+    # with run_col2:
+    #     if st.button("Heuristic", width='stretch'):
+    #         def heur_progress(iteration, smvi, removed):
+    #             progress_slot.info(f"Heuristic: iteration {iteration}, removed {removed} tuples")
+
+    #         if st.session_state.get("original_df") is None:
+    #             progress_slot.info("Computing original...")
+    #             t0 = time.perf_counter()
+    #             st.session_state["original_df"] = tr.run_query()
+    #             st.session_state["runtime_original"] = time.perf_counter() - t0
+    #             st.session_state["deleted_original"] = 0
+
+    #         progress_slot.info("Running heuristic...")
+    #         t0 = time.perf_counter()
+    #         heur_trend_result, _, heur_total_removed = tr.run_heuristic(progress_callback=heur_progress)
+    #         progress_slot.empty()
+    #         st.session_state["heur_df"] = heur_trend_result
+    #         st.session_state["runtime_heuristic"] = time.perf_counter() - t0
+    #         st.session_state["deleted_heuristic"] = int(heur_total_removed)
+
+    #         if getattr(tr, "heur_deleted_per_group", None) is not None:
+    #             st.session_state["heur_deleted_per_group"] = {
+    #                 str(k): int(v) for k, v in tr.heur_deleted_per_group.to_dict().items()
+    #             }
+    #         if getattr(tr, "heur_left_per_group", None) is not None:
+    #             st.session_state["heur_left_per_group"] = {
+    #                 str(k): int(v) for k, v in tr.heur_left_per_group.to_dict().items()
+    #             }
+    #         st.session_state.get("llm_explanations", {}).pop("Heuristic", None)
+    #         _auto_generate_single_explanation("Heuristic")
+
+    # with run_col3:
+    #     step_done = bool(st.session_state.get("partial_steps"))
+    #     if st.button("Optimal", width="stretch", disabled=step_done):
+    #         if st.session_state.get("original_df") is None:
+    #             progress_slot.info("Computing original...")
+    #             t0 = time.perf_counter()
+    #             st.session_state["original_df"] = tr.run_query()
+    #             st.session_state["runtime_original"] = time.perf_counter() - t0
+    #             st.session_state["deleted_original"] = 0
+
+    #         # Reset previous optimal-step UI state
+    #         st.session_state["partial_steps"] = []
+    #         st.session_state["runtime_steps"] = []
+    #         st.session_state["deleted_steps"] = []
+    #         st.session_state["step_deleted_per_group"] = []
+    #         st.session_state["step_left_per_group"] = []
+
+    #         for k in list(st.session_state.keys()):
+    #             if k.startswith("cb_show_step_"):
+    #                 del st.session_state[k]
+
+    #         # Reset auto-run flags
+    #         st.session_state["run_optimal_seq"] = False
+    #         st.session_state["auto_in_progress"] = False
+    #         st.session_state["auto_visible_step"] = None
+    #         st.session_state["pending_step_checkbox_reset"] = False
+    #         st.session_state["latest_step_for_reset"] = None
+
+    #         # CASE 1: heuristic already ran -> keep the old bounded DP behavior
+    #         if st.session_state.get("heur_df") is not None:
+    #             st.session_state["max_steps"] = len(tr.group_keys)
+    #             progress_slot.info("Running optimal DP with heuristic bound...")
+    #             st.session_state["run_optimal_seq"] = True
+
+    #         # CASE 2: no heuristic yet -> allow direct DP-only run
+    #         else:
+    #             progress_slot.info("Running optimal DP (no heuristic bound)...")
+    #             t0 = time.perf_counter()
+    #             optimal_trend_result, _, optimal_total_removed = tr.run_full_dp_no_heur()
+    #             runtime_optimal = time.perf_counter() - t0
+    #             progress_slot.empty()
+
+    #             st.session_state["partial_steps"] = [optimal_trend_result]
+    #             st.session_state["runtime_steps"] = [runtime_optimal]
+    #             st.session_state["deleted_steps"] = [int(optimal_total_removed)]
+    #             st.session_state["max_steps"] = 1
+    #             st.session_state["cb_show_step_1"] = True
+
+    #             if getattr(tr, "last_step_deleted_per_group", None) is not None:
+    #                 st.session_state["step_deleted_per_group"] = [
+    #                     {str(k): int(v) for k, v in tr.last_step_deleted_per_group.to_dict().items()}
+    #                 ]
+    #             if getattr(tr, "last_step_left_per_group", None) is not None:
+    #                 st.session_state["step_left_per_group"] = [
+    #                     {str(k): int(v) for k, v in tr.last_step_left_per_group.to_dict().items()}
+    #                 ]
+
+    #             st.session_state["pending_step_checkbox_reset"] = True
+    #             st.session_state["latest_step_for_reset"] = 1
+
+    #             st.session_state.get("llm_explanations", {}).pop("Optimal", None)
+    #             _auto_generate_single_explanation("Optimal")
 
     # Auto-generate LLM explanations for Optimal steps (batch) AFTER the smooth auto-run finishes.
     if (
