@@ -751,20 +751,18 @@ def _render_chart(chart_slot, group_attr: str, agg_attr: str, agg_func: str):
     chart_slot.altair_chart(chart, width='stretch')
 
 # Shared layout for the results table under the chart
-RESULTS_TABLE_COLS = [3, 1.2, 1.2]
-DISPLAY_CELL_COLS = [0.18, 0.82]   # checkbox slot, then text slot
+# [checkbox, display label, runtime, tuples deleted, right spacer]
+RESULTS_TABLE_COLS = [0.28, 2.2, 1.1, 1.1, 2.8]
 RESULTS_TABLE_GAP = "small"
 
 def _render_table_header():
     cols = st.columns(RESULTS_TABLE_COLS, gap=RESULTS_TABLE_GAP)
 
-    # Match the internal structure of the Display column in the body:
-    # small checkbox slot + label text slot
-    display_cols = cols[0].columns(DISPLAY_CELL_COLS, gap="small")
-    display_cols[1].markdown("**Display**")
-
-    cols[1].markdown("**Runtime**")
-    cols[2].markdown("**Tuples deleted**")
+    # cols[0] is the checkbox column, so it stays empty
+    cols[1].markdown("**Display**")
+    cols[2].markdown("**Runtime**")
+    cols[3].markdown("**Tuples deleted**")
+    # cols[4] is just an empty spacer
 
 
 def is_heuristic_label(label: str) -> bool:
@@ -818,21 +816,19 @@ def _render_row(label: str, key: str, runtime_s, deleted_n, runtime_total_s=None
     row = st.container()
     cols = row.columns(RESULTS_TABLE_COLS, gap=RESULTS_TABLE_GAP)
 
-    # Split the Display cell into:
-    # [checkbox] [label text]
-    display_cols = cols[0].columns(DISPLAY_CELL_COLS, gap="small")
-    display_cols[0].checkbox("", key=key, label_visibility="collapsed")
-    display_cols[1].markdown(label)
+    cols[0].checkbox("", key=key, label_visibility="collapsed")
+    cols[1].markdown(label)
 
     rt_disp = (
         _fmt_sec(runtime_s)
         if runtime_total_s is None
         else f"{_fmt_sec(runtime_s)} ({_fmt_sec(runtime_total_s)})"
     )
-    cols[1].write(rt_disp)
-    cols[2].write(_fmt_int(deleted_n))
+    cols[2].write(rt_disp)
+    cols[3].write(_fmt_int(deleted_n))
 
-    # Distribution differences expander (only for Heuristic and Optimal/Intermediate steps)
+    # cols[4] is an empty spacer on the right
+
     if label != "Original" and deleted_n is not None and deleted_n > 0:
         with row:
             _render_distribution_expander(label)
@@ -1554,8 +1550,25 @@ if not has_data:
 controls_col, output_col = st.columns([1, 3], gap="large")
 
 with controls_col:
-    # "Change dataset" button
     st.divider()
+
+    # Show current dataset name above the button
+    dataset_display_name = st.session_state.get("loaded_dataset_name", "Unknown dataset")
+    st.caption("Dataset")
+    st.markdown(
+        f"""
+        <div style="
+            font-size: 1.05rem;
+            font-weight: 600;
+            margin-bottom: 0.6rem;
+            word-break: break-word;
+        ">
+            {dataset_display_name}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     if st.button("Change dataset", width='stretch'):
         st.session_state.pop("loaded_dataset_name", None)
         st.session_state.pop("loaded_dataset_df", None)
