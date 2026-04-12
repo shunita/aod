@@ -1593,7 +1593,7 @@ with controls_col:
     group_attr = st.selectbox(
         "Grouping attribute",
         available_columns,
-        index=available_columns.index(st.session_state["group_attr_select"]),
+        # index=available_columns.index(st.session_state["group_attr_select"]),
         key="_group_attr_widget",
         on_change=_on_group_attr_change,
     )
@@ -1615,7 +1615,7 @@ with controls_col:
     agg_attr = st.selectbox(
         "Aggregation attribute",
         agg_columns,
-        index=agg_columns.index(st.session_state["agg_attr_select"]),
+        # index=agg_columns.index(st.session_state["agg_attr_select"]),
         key="_agg_attr_widget",
         on_change=_on_agg_attr_change,
     )
@@ -1624,7 +1624,7 @@ with controls_col:
     agg_func = st.selectbox(
         "Aggregation function",
         agg_func_options,
-        index=agg_func_options.index(st.session_state["agg_func_select"]),
+        # index=agg_func_options.index(st.session_state["agg_func_select"]),
         key="_agg_func_widget",
         on_change=_on_agg_func_change,
     )
@@ -1633,7 +1633,7 @@ with controls_col:
     trend_direction = st.radio(
         "Trend direction",
         trend_options,
-        index=trend_options.index(st.session_state["trend_direction_radio"]),
+        # index=trend_options.index(st.session_state["trend_direction_radio"]),
         horizontal=True,
         key="_trend_direction_widget",
         on_change=_on_trend_direction_change,
